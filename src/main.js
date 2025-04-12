@@ -255,134 +255,70 @@ Apify.main(async () => {
                      }
                  }
 
-                // Înlocuiește sau actualizează secțiunea de extragere de date
+                // Înlocuiește secțiunea de extragere a datelor din handlePageFunction
 
-                // În funcția handlePageFunction, actualizează partea de extragere a numelui:
-                const placeName = await page.$eval('h1', (el) => el.textContent.trim())
-                    .catch(() => {
-                        log.warning('Could not extract place name from h1 element');
-                        return 'Unknown Place';
-                    });
+                // Așteaptă încărcarea completă a paginii
+                await page.waitForSelector('h1', { timeout: 20000 }).catch(() => {
+                    log.warning('Timeout waiting for h1 element - page might not have loaded properly');
+                });
+
+                // Așteaptă puțin în plus pentru elementele care se încarcă dinamic
+                await page.waitForTimeout(2000);
+
+                // Extrage numele localului
+                const placeName = await page.evaluate(() => {
+                    const h1 = document.querySelector('h1');
+                    return h1 ? h1.textContent.trim() : 'Unknown Place';
+                }).catch(() => 'Unknown Place');
 
                 log.info(`▶️ Extracting details for: ${placeName} from ${request.url}`);
 
-                // Wait for essential elements to ensure page is loaded
-                const titleSelector = 'h1'; // Simpler, more general selector for the main title
-                try {
-                    await page.waitForSelector(titleSelector, { timeout: 20000 });
-                    log.info('Detail page title found.');
-                } catch (e) {
-                    log.warning(`Could not find title element (${titleSelector}) on ${request.url}. Page might not have loaded correctly.`);
-                    // Consider throwing error to retry if title is essential
-                     throw new Error(`Failed to load essential detail page elements: ${e.message}`);
-                }
+                // Extrage categoria
+                const category = await page.evaluate(() => {
+                    const categoryElement = document.querySelector('button[jsaction*="pane.rating.category"]');
+                    return categoryElement ? categoryElement.textContent.trim() : null;
+                }).catch(() => null);
 
-                // Extragere informații de bază din pagina de detalii using more specific selectors
-                const placeData = await page.evaluate(() => {
-                    const data = {
-                        scrapedUrl: window.location.href // Add the URL we actually scraped from
-                    };
+                // Extrage adresa
+                const address = await page.evaluate(() => {
+                    const addressElements = Array.from(document.querySelectorAll('button[data-item-id*="address"]'));
+                    return addressElements.length > 0 ? addressElements[0].textContent.trim() : null;
+                }).catch(() => null);
 
-                    // Helper function to get text content safely
-                    const getText = (selector) => {
-                        const element = document.querySelector(selector);
-                        return element ? element.textContent.trim() : null;
-                    };
-                     // Helper function to get attribute safely
-                     const getAttribute = (selector, attribute) => {
-                         const element = document.querySelector(selector);
-                         return element ? element.getAttribute(attribute) : null;
-                     };
+                // Extrage numărul de telefon
+                const phone = await page.evaluate(() => {
+                    const phoneElements = Array.from(document.querySelectorAll('button[data-item-id*="phone"]'));
+                    return phoneElements.length > 0 ? phoneElements[0].textContent.trim() : null;
+                }).catch(() => null);
 
+                // Extrage website
+                const website = await page.evaluate(() => {
+                    const websiteElements = Array.from(document.querySelectorAll('a[data-item-id*="authority"]'));
+                    return websiteElements.length > 0 ? websiteElements[0].href : null;
+                }).catch(() => null);
 
-                    data.name = getText('h1'); // Main title
-                    data.category = getText('button[jsaction*="pane.rating.category"]');
-                    data.address = getText('button[data-item-id="address"] div.fontBodyMedium'); // More specific address text
-                    data.phone = getText('button[data-item-id^="phone:"] div.fontBodyMedium'); // More specific phone text
-                    data.website = getAttribute('a[data-item-id="authority"]', 'href');
-                    data.googleUrl = window.location.href; // The canonical URL of the place detail page
-
-                    // Extract Place ID from a common data attribute if available
-                    const placeIdElement = document.querySelector('[data-google-place-id]');
-                    data.placeId = placeIdElement ? placeIdElement.getAttribute('data-google-place-id') : null;
-                    // Fallback: try extracting from URL again if needed
-                    if (!data.placeId) {
-                        const placeIdMatch = window.location.href.match(/!1s([^!]+)/);
-                        if (placeIdMatch && placeIdMatch[1]) {
-                            data.placeId = placeIdMatch[1];
-                        }
-                    }
-
-
-                    // Coordinates (try extracting from meta tag or map link)
-                    data.coordinates = null;
-                    const metaElement = document.querySelector('meta[itemprop="image"]'); // Often contains coords in content URL
-                    if (metaElement) {
-                        const content = metaElement.getAttribute('content');
-                        const llMatch = content ? content.match(/center=([\d.-]+)%2C([\d.-]+)/) : null;
-                        if (llMatch && llMatch[1] && llMatch[2]) {
-                            data.coordinates = { lat: parseFloat(llMatch[1]), lng: parseFloat(llMatch[2]) };
-                        }
-                    }
-                     // Fallback to map link if meta tag fails
-                     if (!data.coordinates) {
-                         const mapLink = document.querySelector('a[href*="/maps/dir/"]');
-                         if (mapLink) {
-                             const url = mapLink.href;
-                             const atIndex = url.indexOf('/@');
-                             if (atIndex !== -1) {
-                                 const coordsPart = url.substring(atIndex + 2).split('z')[0];
-                                 const [lat, lng] = coordsPart.split(',');
-                                 if (lat && lng && !isNaN(parseFloat(lat)) && !isNaN(parseFloat(lng))) {
-                                     data.coordinates = { lat: parseFloat(lat), lng: parseFloat(lng) };
-                                 }
-                             }
-                         }
-                     }
-
-
-                    // Rating and review count
-                    const ratingElement = document.querySelector('div.F7nice'); // Common container for rating/reviews
-                    if (ratingElement) {
-                        const ratingValue = ratingElement.querySelector('span[aria-hidden="true"]')?.textContent.trim();
-                        const reviewCountText = ratingElement.querySelector('span[aria-label*="reviews"]')?.textContent.trim();
-
-                        data.rating = ratingValue && !isNaN(parseFloat(ratingValue)) ? parseFloat(ratingValue) : null;
-                        if (reviewCountText) {
-                            const countMatch = reviewCountText.match(/[\d,]+/);
-                            data.reviewCount = countMatch ? parseInt(countMatch[0].replace(/,/g, ''), 10) : null;
-                        }
-                    }
-
-                    // Opening Hours
-                    // Clicking the hours might be needed, this gets the currently displayed status
-                    const hoursElement = document.querySelector('div[jsaction*="pane.openhours"]');
-                    data.openingHoursStatus = hoursElement ? hoursElement.textContent.trim() : null; // e.g., "Open ⋅ Closes 10 PM"
-                    // Extracting full schedule requires clicking and parsing the table, which adds complexity.
-                    // For now, we just get the current status text.
-
-                    // Description (Plus Code, etc.) - Look for sections with specific icons
-                    data.plusCode = getText('button[data-item-id="plus_code"] div.fontBodyMedium');
-                    // Other attributes often found in similar buttons
-                    // data.someAttribute = getText('button[data-item-id="attribute_id"] div.fontBodyMedium');
-
-                    // Status (Temporarily closed, Permanently closed)
-                    const statusElement = document.querySelector('div.fontHeadlineSmall + div > span[style*="color: rgb(217, 48, 37)"]'); // Look for red text near title
-                    data.status = statusElement ? statusElement.textContent.trim() : 'Operational'; // Assume operational if no specific status found
-
-
-                    // Images (extract first few image URLs)
-                    data.imageUrls = [];
-                    const imageElements = document.querySelectorAll('button[jsaction*="pane.heroHeaderImage.click"] img');
-                    imageElements.forEach(img => {
-                        if (img.src && !img.src.startsWith('data:')) { // Exclude base64 images
-                            data.imageUrls.push(img.src);
-                        }
-                    });
-
-
-                    return data;
-                });
+                // Construiește obiectul de date
+                const placeData = {
+                    scrapedUrl: request.url,
+                    name: placeName,
+                    category: category,
+                    address: address,
+                    phone: phone,
+                    website: website,
+                    googleUrl: request.url,
+                    placeId: null, // Vom extrage mai târziu
+                    coordinates: {
+                        lat: 0,
+                        lng: 0
+                    },
+                    openingHoursStatus: null,
+                    plusCode: null,
+                    status: "Operational",
+                    imageUrls: [],
+                    reviews: [],
+                    email: null,
+                    socialProfiles: {}
+                };
 
                 // Add Place ID if extracted separately
                 const placeIdFromUrl = request.url.match(/!1s([^!]+)/);
