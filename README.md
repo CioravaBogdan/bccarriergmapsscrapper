@@ -32,40 +32,44 @@ The actor outputs data for each scraped place into the default Apify dataset. Ea
 Example Output Item:
 
 ```json
-{
-  "name": "Example Business",
-  "category": "Restaurant",
-  "address": "123 Main St, Anytown, USA",
-  "phone": "+1 555-123-4567",
-  "website": "http://www.example.com",
-  "googleUrl": "https://www.google.com/maps/place/...",
-  "placeId": "ChIJ...",
-  "coordinates": { "lat": 40.7128, "lng": -74.0060 },
-  "rating": 4.5,
-  "reviewCount": 150,
-  "openingHoursStatus": "Open ⋅ Closes 10 PM",
-  "plusCode": "87G8P2R2+4X",
-  "status": "Operational",
-  "imageUrls": ["https://lh5..."],
-  "reviews": [
+[
+  {
+    "name": "Restaurant Exemplu",
+    "category": "Restaurant",
+    "address": "Strada Exemplu 123, București",
+    "phone": "+40 123 456 789",
+    "website": "https://www.exemplu.ro",
+    "googleUrl": "https://www.google.com/maps/place/...",
+    "placeId": "ChIJ...",
+    "coordinates": { 
+      "lat": 44.4268, 
+      "lng": 26.1025 
+    },
+    "rating": 4.5,
+    "reviewCount": 150,
+    "openingHoursStatus": "Deschis ⋅ Se închide la 22:00",
+    "plusCode": "8GFQ2X4R+M8",
+    "status": "Operațional",
+    "imageUrls": ["https://lh5..."],
+    "reviews": [
       {
-          "reviewId": "...",
-          "text": "Great food!",
-          "rating": 5,
-          "relativeDate": "a month ago",
-          "reviewerName": "John D.", // If includeReviewerInfo=true
-          "ownerReply": "Thank you!",
-          "ownerReplyRelativeDate": "3 weeks ago"
+        "reviewId": "abc123",
+        "text": "Mâncare excelentă!",
+        "rating": 5,
+        "relativeDate": "acum o lună",
+        "reviewerName": "Ion P.",
+        "ownerReply": "Vă mulțumim!",
+        "ownerReplyRelativeDate": "acum 3 săptămâni"
       }
-      // ... more reviews
-  ],
-  "email": "contact@example.com", // If found on website
-  "socialProfiles": { // If found on website
-      "facebook": "https://www.facebook.com/example",
-      "instagram": "https://www.instagram.com/example"
-  },
-  "scrapedUrl": "https://www.google.com/maps/place/..."
-}
+    ],
+    "email": "contact@exemplu.ro",
+    "socialProfiles": {
+      "facebook": "https://www.facebook.com/exemplu",
+      "instagram": "https://www.instagram.com/exemplu"
+    },
+    "scrapedUrl": "https://www.google.com/maps/place/..."
+  }
+]
 ```
 
 ## Running Locally (Docker)
