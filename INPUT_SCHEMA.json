@@ -24,6 +24,25 @@
       "description": "The location to search in (e.g., 'New York', 'Paris', 'Tokyo').",
       "default": "",
       "editor": "textfield"
+    },
+    "latitude": {
+      "title": "Latitude",
+      "type": "number",
+      "description": "Latitude coordinate for area search (e.g., 46.5654079)",
+      "editor": "number"
+    },
+    "longitude": {
+      "title": "Longitude",
+      "type": "number",
+      "description": "Longitude coordinate for area search (e.g., 26.9169387)",
+      "editor": "number"
+    },
+    "searchRadius": {
+      "title": "Search Radius (km)",
+      "type": "number",
+      "description": "Radius around coordinates to search in (only applies when coordinates are specified)",
+      "default": 5,
+      "editor": "number"
     }
   }
 }

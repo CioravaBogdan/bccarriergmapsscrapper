@@ -63,23 +63,50 @@ Apify.main(async () => {
             initialRequestCount++;
         }
     } else {
+        // Înlocuiește secțiunea de construire a URL-urilor de căutare
+
         // Construiește URL-ul de căutare dacă nu avem startUrls
-        if (startUrls.length === 0 && search) {
-            log.info('No start URLs provided, generating from search parameters.');
-            const searchTermEncoded = encodeURIComponent(search);
-            const locationEncoded = searchLocation ? encodeURIComponent(searchLocation) : '';
-            let searchUrl = `https://www.google.com/maps/search/${searchTermEncoded}/`;
-            
-            if (locationEncoded) {
-                searchUrl += `@${locationEncoded}`;
+        if (startUrls.length === 0) {
+            if (search) {
+                log.info('Generating search URL from keywords and location...');
+                const searchTermEncoded = encodeURIComponent(search);
+                
+                // Verifică dacă avem coordonate specifice
+                if (input.latitude && input.longitude) {
+                    const searchUrl = `https://www.google.com/maps/search/${searchTermEncoded}/@${input.latitude},${input.longitude},14z`;
+                    log.info(`Adding search URL with coordinates: ${searchUrl}`);
+                    await requestQueue.addRequest({ 
+                        url: searchUrl, 
+                        userData: { 
+                            label: 'SEARCH', 
+                            search, 
+                            coordinates: { lat: input.latitude, lng: input.longitude } 
+                        } 
+                    });
+                } 
+                // Dacă avem o locație specificată ca text
+                else if (searchLocation) {
+                    const locationEncoded = encodeURIComponent(searchLocation);
+                    const searchUrl = `https://www.google.com/maps/search/${searchTermEncoded}/${locationEncoded}`;
+                    log.info(`Adding search URL with location: ${searchUrl}`);
+                    await requestQueue.addRequest({ 
+                        url: searchUrl, 
+                        userData: { label: 'SEARCH', search, searchLocation } 
+                    });
+                }
+                // Doar căutare după cuvinte cheie
+                else {
+                    const searchUrl = `https://www.google.com/maps/search/${searchTermEncoded}/`;
+                    log.info(`Adding search URL with only keywords: ${searchUrl}`);
+                    await requestQueue.addRequest({ 
+                        url: searchUrl, 
+                        userData: { label: 'SEARCH', search } 
+                    });
+                }
+                initialRequestCount++;
+            } else {
+                throw new Error('Input error: You must provide either "startUrls" or "search" parameters.');
             }
-            
-            log.info(`Adding search URL: ${searchUrl}`);
-            await requestQueue.addRequest({ 
-                url: searchUrl, 
-                userData: { label: 'SEARCH', search, searchLocation } 
-            });
-            initialRequestCount++;
         }
     }
     log.info(`Request queue initialized with ${initialRequestCount} request(s).`);
@@ -297,7 +324,71 @@ Apify.main(async () => {
                     return websiteElements.length > 0 ? websiteElements[0].href : null;
                 }).catch(() => null);
 
-                // Construiește obiectul de date
+                // Extrage coordonatele din URL și din metadate
+                const coordinates = await page.evaluate(() => {
+                    try {
+                        // Metodă 1: Caută în URL
+                        const urlMatch = window.location.href.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
+                        if (urlMatch && urlMatch.length >= 3) {
+                            return {
+                                lat: parseFloat(urlMatch[1]),
+                                lng: parseFloat(urlMatch[2])
+                            };
+                        }
+                        
+                        // Metodă 2: Caută în metadatele paginii
+                        const metaViewport = document.querySelector('meta[property="og:image"]');
+                        if (metaViewport) {
+                            const content = metaViewport.getAttribute('content');
+                            const coordMatch = content.match(/center=(-?\d+\.\d+)%2C(-?\d+\.\d+)/);
+                            if (coordMatch && coordMatch.length >= 3) {
+                                return {
+                                    lat: parseFloat(coordMatch[1]),
+                                    lng: parseFloat(coordMatch[2])
+                                };
+                            }
+                        }
+                        
+                        // Metodă 3: Caută în scripturile din pagină
+                        const scripts = Array.from(document.querySelectorAll('script'));
+                        for (const script of scripts) {
+                            if (!script.textContent) continue;
+                            
+                            // Caută pattern-ul pentru coordonate
+                            const latMatch = script.textContent.match(/"latitude":(-?\d+\.\d+)/);
+                            const lngMatch = script.textContent.match(/"longitude":(-?\d+\.\d+)/);
+                            
+                            if (latMatch && lngMatch) {
+                                return {
+                                    lat: parseFloat(latMatch[1]),
+                                    lng: parseFloat(lngMatch[2])
+                                };
+                            }
+                        }
+                        
+                        // Metodă 4: Verificare shorturls (maps.app.goo.gl)
+                        if (window.location.href.includes('maps.app.goo.gl')) {
+                            // Pentru linkurile scurte, verifică dacă a fost redirecționat către URL cu coordonate
+                            const canonicalUrl = document.querySelector('link[rel="canonical"]')?.href;
+                            if (canonicalUrl) {
+                                const canonicalMatch = canonicalUrl.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
+                                if (canonicalMatch) {
+                                    return {
+                                        lat: parseFloat(canonicalMatch[1]),
+                                        lng: parseFloat(canonicalMatch[2])
+                                    };
+                                }
+                            }
+                        }
+                        
+                        return { lat: 0, lng: 0 }; // fallback
+                    } catch (e) {
+                        console.error('Error extracting coordinates:', e);
+                        return { lat: 0, lng: 0 };
+                    }
+                });
+
+                // Actualizează placeData cu coordonatele extrase
                 const placeData = {
                     scrapedUrl: request.url,
                     name: placeName,
@@ -307,10 +398,7 @@ Apify.main(async () => {
                     website: website,
                     googleUrl: request.url,
                     placeId: null, // Vom extrage mai târziu
-                    coordinates: {
-                        lat: 0,
-                        lng: 0
-                    },
+                    coordinates: coordinates,
                     openingHoursStatus: null,
                     plusCode: null,
                     status: "Operational",
