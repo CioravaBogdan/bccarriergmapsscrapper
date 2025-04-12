@@ -63,12 +63,24 @@ Apify.main(async () => {
             initialRequestCount++;
         }
     } else {
-        // Construim URL de căutare pe Google Maps folosind termenul și locația
-        const queryParam = encodeURIComponent(search.trim() + ' ' + (searchLocation || '').trim());
-        const searchUrl = `https://www.google.com/maps/search/${queryParam}?hl=${language}`;
-        log.info(`Adding search URL: ${searchUrl}`);
-        await requestQueue.addRequest({ url: searchUrl, userData: { label: 'SEARCH', search, searchLocation } });
-        initialRequestCount++;
+        // Construiește URL-ul de căutare dacă nu avem startUrls
+        if (startUrls.length === 0 && search) {
+            log.info('No start URLs provided, generating from search parameters.');
+            const searchTermEncoded = encodeURIComponent(search);
+            const locationEncoded = searchLocation ? encodeURIComponent(searchLocation) : '';
+            let searchUrl = `https://www.google.com/maps/search/${searchTermEncoded}/`;
+            
+            if (locationEncoded) {
+                searchUrl += `@${locationEncoded}`;
+            }
+            
+            log.info(`Adding search URL: ${searchUrl}`);
+            await requestQueue.addRequest({ 
+                url: searchUrl, 
+                userData: { label: 'SEARCH', search, searchLocation } 
+            });
+            initialRequestCount++;
+        }
     }
     log.info(`Request queue initialized with ${initialRequestCount} request(s).`);
 
@@ -243,7 +255,15 @@ Apify.main(async () => {
                      }
                  }
 
-                const placeName = request.userData.placeName;
+                // Înlocuiește sau actualizează secțiunea de extragere de date
+
+                // În funcția handlePageFunction, actualizează partea de extragere a numelui:
+                const placeName = await page.$eval('h1', (el) => el.textContent.trim())
+                    .catch(() => {
+                        log.warning('Could not extract place name from h1 element');
+                        return 'Unknown Place';
+                    });
+
                 log.info(`▶️ Extracting details for: ${placeName} from ${request.url}`);
 
                 // Wait for essential elements to ensure page is loaded
