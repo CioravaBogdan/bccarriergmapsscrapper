@@ -2,24 +2,16 @@
 FROM apify/actor-node-puppeteer-chrome:latest
 
 # Set the working directory in the container
-WORKDIR /app
+WORKDIR /usr/src/app
 
-# Copy package.json and package-lock.json (if available)
+# Copy package.json and package-lock.json
 COPY package*.json ./
 
-# Create node_modules directory with proper permissions and install dependencies
-RUN mkdir -p node_modules && \
-    chown -R myuser:myuser /app && \
-    su myuser -c "npm install --omit=dev"
+# Install NPM packages
+RUN npm install --only=prod --no-optional
 
-# Copy the rest of the application code (src folder, apify.json, etc.)
-COPY . .
+# Copy the rest of the application code
+COPY . ./
 
-# Ensure proper permissions for all files
-RUN chown -R myuser:myuser /app
-
-# Switch to the non-root user for better security
-USER myuser
-
-# Define the command to run the actor
+# Run npm start as the default command
 CMD [ "npm", "start" ]
