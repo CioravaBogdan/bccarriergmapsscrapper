@@ -1,122 +1,125 @@
 # Google Maps Advanced Scraper
 
-This Apify actor scrapes detailed information about businesses from Google Maps, including contact details, reviews, and more. It can optionally visit the business's website to find email addresses and social media profiles.
+Acesta este un actor Apify pentru extragerea datelor din Google Maps, capabil să extragă detalii despre locații/afaceri prin căutare după cuvinte cheie, locații sau coordonate geografice specifice.
 
-## Features
+## Funcționalități
 
-*   Scrapes business name, address, phone, website, category, rating, review count, opening hours, coordinates, etc.
-*   Optionally scrapes detailed user reviews, including text, rating, date, and owner replies.
-*   Optionally visits the listed website to find email addresses and social media links (Facebook, Instagram, Twitter, LinkedIn).
-*   Supports starting from specific Google Maps URLs or performing a new search.
-*   Uses Apify SDK with Puppeteer for robust browser automation.
-*   Configurable proxy support (Apify Proxy recommended).
-*   Limits for maximum items and maximum reviews per place.
-*   Basic cost control estimation.
-*   Handles retries and logs errors.
+- **Căutare flexibilă**: Caută după cuvinte cheie, locații sau coordonate geografice
+- **Extragerea datelor detaliate**: Nume, adresă, telefon, website, coordonate geografice
+- **Procesare URL-uri**: Suport pentru URL-uri directe către afaceri sau pagini de căutare
+- **Control al costurilor**: Limitare opțională a numărului de rezultate pentru a controla costurile
+- **Suport pentru review-uri**: Extrage opțional recenziile și informații despre utilizatorii care le-au lăsat
+- **Proxy rotativ**: Utilizează Apify Proxy pentru a evita blocările și limitările
 
-## Input Schema
+## Parametri de intrare
 
-See `INPUT_SCHEMA.json` for detailed input parameters and descriptions. Key inputs include:
+| Parametru | Tip | Descriere |
+|-----------|-----|-----------|
+| `startUrls` | Array | Lista de URL-uri Google Maps pentru extragere directă. Lasă gol pentru a folosi parametrii de căutare. |
+| `search` | String | Termenul de căutare pe Google Maps (ex: "restaurante", "hoteluri", "cafenele"). |
+| `searchLocation` | String | Locația în care să se caute (ex: "Bacău", "București", "Cluj"). |
+| `latitude` | Number | Coordonata de latitudine pentru căutare în zonă (ex: 46.5654079). |
+| `longitude` | Number | Coordonata de longitudine pentru căutare în zonă (ex: 26.9169387). |
+| `searchRadius` | Number | Raza în kilometri în jurul coordonatelor specificate (aplicabil doar când sunt specificate coordonatele). |
+| `maxItems` | Number | Numărul maxim de rezultate de extras. 0 = fără limită. |
+| `language` | String | Limba în care să se extragă datele (ex: "ro", "en"). |
+| `includeReviews` | Boolean | Dacă să se extragă și recenziile afacerilor. |
+| `maxReviews` | Number | Numărul maxim de recenzii de extras per afacere. 0 = toate disponibile. |
+| `includeReviewerInfo` | Boolean | Dacă să se extragă și informațiile despre utilizatorii care au lăsat recenzii. |
+| `maxCostPerRun` | Number | Costul maxim estimat per rulare. 0 = fără limită. |
 
-*   `startUrls`: List of Google Maps URLs to scrape directly.
-*   `search` / `searchLocation`: Keywords and location for a new search.
-*   `maxItems`: Maximum number of places to scrape.
-*   `includeReviews`: Boolean flag to enable review scraping.
-*   `maxReviews`: Maximum number of reviews per place.
-*   `proxyConfig`: Proxy settings.
+## Exemple de utilizare
 
-## Output
-
-The actor outputs data for each scraped place into the default Apify dataset. Each item includes the fields extracted from Google Maps and potentially the website (email, socialProfiles).
-
-Example Output Item:
+### 1. Căutare după cuvinte cheie într-o locație:
 
 ```json
-[
-  {
-    "name": "Restaurant Exemplu",
-    "category": "Restaurant",
-    "address": "Strada Exemplu 123, București",
-    "phone": "+40 123 456 789",
-    "website": "https://www.exemplu.ro",
-    "googleUrl": "https://www.google.com/maps/place/...",
-    "placeId": "ChIJ...",
-    "coordinates": { 
-      "lat": 44.4268, 
-      "lng": 26.1025 
-    },
-    "rating": 4.5,
-    "reviewCount": 150,
-    "openingHoursStatus": "Deschis ⋅ Se închide la 22:00",
-    "plusCode": "8GFQ2X4R+M8",
-    "status": "Operațional",
-    "imageUrls": ["https://lh5..."],
-    "reviews": [
-      {
-        "reviewId": "abc123",
-        "text": "Mâncare excelentă!",
-        "rating": 5,
-        "relativeDate": "acum o lună",
-        "reviewerName": "Ion P.",
-        "ownerReply": "Vă mulțumim!",
-        "ownerReplyRelativeDate": "acum 3 săptămâni"
-      }
-    ],
-    "email": "contact@exemplu.ro",
-    "socialProfiles": {
-      "facebook": "https://www.facebook.com/exemplu",
-      "instagram": "https://www.instagram.com/exemplu"
-    },
-    "scrapedUrl": "https://www.google.com/maps/place/..."
-  }
-]
+{
+  "search": "fabrica",
+  "searchLocation": "bacau",
+  "language": "ro",
+  "maxItems": 10
+}
 ```
 
-## Running Locally (Docker)
+### 2. Căutare după cuvinte cheie și coordonate:
 
-1.  Build the Docker image: `docker build -t gmaps-scraper .`
-2.  Prepare an `input.json` file in `./apify_storage/input.json`.
-3.  Run the container:
-    ```bash
-    docker run --rm -v ./apify_storage:/app/apify_storage gmaps-scraper
-    ```
-    *(Note: Apify SDK v3+ uses `apify_storage` by default. Adjust volume mount if needed based on SDK version or local setup)*
-    Results will be in `./apify_storage/datasets/default`.
+```json
+{
+  "search": "restaurante",
+  "latitude": 46.5654079,
+  "longitude": 26.9169387,
+  "searchRadius": 5,
+  "language": "ro",
+  "maxItems": 20
+}
+```
 
-## Running on Apify Platform
+### 3. Extragere de la URL-uri specifice:
 
-1.  Install Apify CLI: `npm install -g apify-cli`
-2.  Login: `apify login`
-3.  Push the actor: `apify push`
-4.  Run the actor from the Apify Console or via API, providing the necessary input.
+```json
+{
+  "startUrls": [
+    {
+      "url": "https://www.google.com/maps/place/Restaurant+Casa+Noastr%C4%83+Bac%C4%83u/@46.5654079,26.9169387,15z"
+    }
+  ],
+  "includeReviews": true,
+  "maxReviews": 50,
+  "language": "ro"
+}
+```
 
-## Notes
+## Format date rezultate
 
-*   Google Maps frequently changes its layout. Selectors in the code might need updates.
-*   Scraping Google Maps can lead to IP blocks or CAPTCHAs. Using high-quality proxies (like Apify Residential Proxies) is highly recommended.
-*   Be mindful of Google's Terms of Service and data privacy regulations (like GDPR) when scraping and using the data, especially reviewer information.
+```json
+{
+  "scrapedUrl": "https://www.google.com/maps/place/...",
+  "name": "Numele afacerii",
+  "category": "Categoria afacerii",
+  "address": "Adresa completă",
+  "phone": "+40 123 456 789",
+  "website": "https://website.com",
+  "googleUrl": "https://www.google.com/maps/place/...",
+  "placeId": "ID-ul Google Places",
+  "coordinates": {
+    "lat": 46.1234567,
+    "lng": 27.1234567
+  },
+  "openingHoursStatus": "Deschis",
+  "reviews": [
+    {
+      "name": "Nume utilizator",
+      "rating": 5,
+      "date": "acum o lună",
+      "text": "Textul recenziei..."
+    }
+  ]
+}
+```
 
-## Legal & Ethical Considerations
+## Instalare și rulare locală
 
-### Terms of Service Compliance
-This scraper interacts with Google Maps in a way that may not comply with Google's Terms of Service. Using this tool for commercial purposes may violate these terms. It is provided for educational purposes only. Users are responsible for ensuring their usage complies with all applicable terms and conditions.
+1. Clonează repository-ul:
+```
+git clone https://github.com/CioravaBogdan/bccarriergmapsscrapper.git
+```
 
-### Data Privacy & GDPR
-* This scraper can collect business information and optionally reviewer data from Google Maps.
-* If you enable the `includeReviewerInfo` option, be aware that you may be collecting personal data subject to GDPR and other privacy regulations.
-* If you plan to store or process data from EU citizens:
-  * Ensure you have a legal basis for processing this data
-  * Implement data minimization principles
-  * Provide a way for individuals to request removal of their data
-  * Document your data processing activities
+2. Instalează dependențele:
+```
+npm install
+```
 
-### Rate Limiting & Site Impact
-* The scraper includes basic rate limiting and randomized delays to minimize impact on Google's servers.
-* Be responsible with your scraping frequency and volume.
-* Consider using the maxItems and maxCostPerRun parameters to limit your scraper's footprint.
+3. Rulează scraper-ul:
+```
+npm start
+```
 
-### Opt-Out Implementation
-If you're building a service using this data, consider implementing:
-* Clear data removal processes
-* Privacy policy explaining data sources
-* Contact information for removal requests
+## Repository GitHub
+
+Repository-ul este disponibil la: [https://github.com/CioravaBogdan/bccarriergmapsscrapper](https://github.com/CioravaBogdan/bccarriergmapsscrapper)
+
+## Note
+
+- Acest actor este proiectat pentru a rula pe platforma Apify
+- Respectă termenii și condițiile Google Maps
+- Utilizează un proxy pentru a evita rate limiting
