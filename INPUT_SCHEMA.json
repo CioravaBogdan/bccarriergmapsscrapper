@@ -43,6 +43,49 @@
       "description": "Radius around coordinates to search in (only applies when coordinates are specified)",
       "default": 5,
       "editor": "number"
+    },
+    "maxItems": {
+      "title": "Maximum Items",
+      "type": "integer",
+      "description": "Maximum number of results to extract. 0 = unlimited",
+      "default": 0,
+      "editor": "number"
+    },
+    "language": {
+      "title": "Language",
+      "type": "string",
+      "description": "Language to use for extraction (e.g., 'en', 'ro')",
+      "default": "en",
+      "editor": "select",
+      "enum": ["en", "ro", "fr", "de", "es", "it"]
+    },
+    "includeReviews": {
+      "title": "Include Reviews",
+      "type": "boolean",
+      "description": "Whether to extract business reviews",
+      "default": false,
+      "editor": "checkbox"
+    },
+    "maxReviews": {
+      "title": "Max Reviews per Business",
+      "type": "integer",
+      "description": "Maximum number of reviews to extract per business. 0 = all available",
+      "default": 0,
+      "editor": "number"
+    },
+    "includeReviewerInfo": {
+      "title": "Include Reviewer Information",
+      "type": "boolean",
+      "description": "Whether to extract information about review authors",
+      "default": false,
+      "editor": "checkbox"
+    },
+    "maxCostPerRun": {
+      "title": "Maximum Cost per Run ($)",
+      "type": "number",
+      "description": "Estimated maximum cost. 0 = unlimited",
+      "default": 0,
+      "editor": "number"
     }
   }
 }
