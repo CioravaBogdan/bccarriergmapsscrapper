@@ -12,7 +12,7 @@
   "dependencies": {
     "apify": "^2.3.0",
     "exponential-backoff": "^3.1.0",
-    "puppeteer": "^21.6.1"
+    "puppeteer": "13.7.0"
   },
   "type": "commonjs"
 }
