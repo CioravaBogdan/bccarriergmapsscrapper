@@ -27,19 +27,19 @@
     },
     "latitude": {
       "title": "Latitude",
-      "type": "number",
+      "type": "string",
       "description": "Latitude coordinate for area search (e.g., 46.5654079)",
-      "editor": "number"
+      "editor": "textfield"
     },
     "longitude": {
       "title": "Longitude",
-      "type": "number",
+      "type": "string",
       "description": "Longitude coordinate for area search (e.g., 26.9169387)",
-      "editor": "number"
+      "editor": "textfield"
     },
     "searchRadius": {
       "title": "Search Radius (km)",
-      "type": "number",
+      "type": "integer",
       "description": "Radius around coordinates to search in (only applies when coordinates are specified)",
       "default": 5,
       "editor": "number"
@@ -82,10 +82,11 @@
     },
     "maxCostPerRun": {
       "title": "Maximum Cost per Run ($)",
-      "type": "number",
+      "type": "integer",
       "description": "Estimated maximum cost. 0 = unlimited",
       "default": 0,
       "editor": "number"
     }
-  }
+  },
+  "required": []
 }
