@@ -1,0 +1,94 @@
+{
+    "title": "Google Maps Advanced Scraper Input",
+    "description": "Input schema for the advanced Google Maps scraper actor.",
+    "type": "object",
+    "schemaVersion": 1,
+    "properties": {
+        "startUrls": {
+            "title": "Start URLs",
+            "description": "Optional list of Google Maps URLs (search results or place details) to start scraping from.",
+            "type": "array",
+            "editor": "requestListSources",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "editor": "textfield"
+                    }
+                },
+                "required": [
+                    "url"
+                ]
+            },
+            "default": []
+        },
+        "search": {
+            "title": "Search Query",
+            "description": "Keywords to search for on Google Maps (e.g., 'restaurants', 'plumbers'). Used if startUrls is empty.",
+            "type": "string",
+            "editor": "textfield"
+        },
+        "searchLocation": {
+            "title": "Search Location",
+            "description": "The location (city, area) to perform the search in. Used if startUrls is empty.",
+            "type": "string",
+            "editor": "textfield"
+        },
+        "language": {
+            "title": "Language",
+            "description": "Language code for Google Maps interface (e.g., 'en', 'ro', 'es'). Affects some extracted data.",
+            "type": "string",
+            "editor": "textfield",
+            "default": "ro"
+        },
+        "maxItems": {
+            "title": "Max Places",
+            "description": "Maximum number of places to extract. 0 means unlimited.",
+            "type": "integer",
+            "editor": "number",
+            "default": 0,
+            "minimum": 0
+        },
+        "includeReviews": {
+            "title": "Include Reviews",
+            "description": "Extract detailed reviews for each place.",
+            "type": "boolean",
+            "editor": "checkbox",
+            "default": false
+        },
+        "maxReviews": {
+            "title": "Max Reviews per Place",
+            "description": "Maximum number of reviews to extract per place (if includeReviews is true). 0 means all.",
+            "type": "integer",
+            "editor": "number",
+            "default": 0,
+            "minimum": 0
+        },
+        "includeReviewerInfo": {
+            "title": "Include Reviewer Info",
+            "description": "Extract details about reviewers (name, profile link). Use with caution regarding privacy/GDPR.",
+            "type": "boolean",
+            "editor": "checkbox",
+            "default": false
+        },
+        "maxCostPerRun": {
+            "title": "Max Cost Per Run (USD)",
+            "description": "Estimated maximum cost for this run on the Apify platform. 0 means no specific cost limit.",
+            "type": "number",
+            "editor": "number",
+            "default": 0,
+            "minimum": 0
+        },
+        "proxyConfig": {
+            "title": "Proxy Configuration",
+            "description": "Proxy settings for the crawler.",
+            "type": "object",
+            "editor": "proxy",
+            "default": {
+                "useApifyProxy": true
+            }
+        }
+    },
+    "required": []
+}
