@@ -82,63 +82,26 @@ Apify.main(async () => {
     const crawler = new Apify.PuppeteerCrawler({
         requestQueue,
         proxyConfiguration,
-        useSessionPool: true,
-        sessionPoolOptions: {
-            maxPoolSize: 50, // Increase session pool size
+        maxConcurrency: 1, // Reducem la 1 pentru debugging
+        maxRequestRetries: 3,
+        navigationTimeoutSecs: 120,
+        
+        // Eliminăm complet configurația launchContext și folosim browserPoolOptions
+        browserPoolOptions: {
+            // Configurare minimală
+            useFingerprints: false,
+            preLaunchHooks: [],
+            postLaunchHooks: [],
+            prePageCreateHooks: [],
+            postPageCreateHooks: [],
         },
-        persistCookiesPerSession: true,
-        launchContext: {
-            useChrome: true,
-            launchOptions: {
-                headless: true,
-                args: [
-                    '--no-sandbox',
-                    '--disable-setuid-sandbox',
-                    '--disable-dev-shm-usage',
-                    '--disable-accelerated-2d-canvas',
-                    '--disable-gpu',
-                    `--lang=${language}`,
-                    // Add these:
-                    '--disable-blink-features=AutomationControlled',
-                    '--window-size=1920,1080'
-                ]
-            },
-            stealth: true,
-            stealthOptions: {
-                addPlugins: false,
-                emulateWindowFrame: true,
-                emulateWebDriver: false,
-                hideWebDriver: true,
-                maskWebRTC: true,
-                maskUserAgent: true, // Will use common user agent
-                spoofScreenSize: true,
-                spoofAudioContextFactory: true,
-                spoofClientRects: true
-            }
-        },
-        maxConcurrency: 5,
-        maxRequestRetries: 3, // Increased retries
-        handlePageTimeoutSecs: 120, // Increased timeout for complex pages/reviews
+        
+        // Eliminăm configurațiile avansate pentru moment
+        useSessionPool: false, // Dezactivăm session pool temporar
+        persistCookiesPerSession: false, // Dezactivăm persistența cookie-urilor
 
-        // 5. Pre-procesare pagină înainte de navigare (opțional, ex: blocare resurse inutile)
-        preNavigationHooks: [ async ({ page, request }) => {
-            await page.setRequestInterception(true);
-            page.on('request', (interceptedRequest) => {
-                const resourceType = interceptedRequest.resourceType();
-                const url = interceptedRequest.url();
-
-                // Block images, fonts, stylesheets, media, and map tiles
-                if (['image', 'font', 'stylesheet', 'media'].includes(resourceType) || url.includes('/maps/vt/')) {
-                   interceptedRequest.abort();
-                } else {
-                   interceptedRequest.continue();
-                }
-            });
-            log.debug(`Executing preNavigationHook for ${request.url}`);
-        }],
-
-        // 6. Funcția principală de procesare a paginii
-        handlePageFunction: async ({ page, request, session, enqueueLinks }) => {
+        // Restul metodelor de handler rămân la fel
+        handlePageFunction: async ({ page, request }) => {
             const { label } = request.userData;
             log.info(`Processing ${request.url} (Label: ${label})`);
 
@@ -540,7 +503,7 @@ Apify.main(async () => {
         },
 
         // 10. Funcție de tratare a eșecurilor
-        handleFailedRequestFunction: async ({ request, error, session }) => {
+        handleFailedRequestFunction: async ({ request, error }) => {
             log.error(`❌ Request failed after ${request.retryCount} retries: ${request.url} | Error: ${error.message}`);
             // Log failed request details for debugging
             const failedData = {
