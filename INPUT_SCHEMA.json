@@ -9,18 +9,9 @@
             "description": "Optional list of Google Maps URLs (search results or place details) to start scraping from.",
             "type": "array",
             "editor": "requestListSources",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "url": {
-                        "type": "string",
-                        "editor": "textfield"
-                    }
-                },
-                "required": [
-                    "url"
-                ]
-            },
+            "prefill": [
+                { "url": "https://www.google.com/maps/place/Restaurant+Exemplu" }
+            ],
             "default": []
         },
         "search": {
