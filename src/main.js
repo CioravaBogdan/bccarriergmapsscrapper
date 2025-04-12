@@ -63,7 +63,7 @@ Apify.main(async () => {
             initialRequestCount++;
         }
     } else {
-        // Înlocuiește secțiunea de construire a URL-urilor de căutare
+        // Înlocuiește secțiunea actuală cu acest cod mai bun pentru construirea URL-urilor
 
         // Construiește URL-ul de căutare dacă nu avem startUrls
         if (startUrls.length === 0) {
@@ -87,7 +87,8 @@ Apify.main(async () => {
                 // Dacă avem o locație specificată ca text
                 else if (searchLocation) {
                     const locationEncoded = encodeURIComponent(searchLocation);
-                    const searchUrl = `https://www.google.com/maps/search/${searchTermEncoded}/${locationEncoded}`;
+                    // Format corect: "căutare în locație"
+                    const searchUrl = `https://www.google.com/maps/search/${searchTermEncoded}+in+${locationEncoded}/`;
                     log.info(`Adding search URL with location: ${searchUrl}`);
                     await requestQueue.addRequest({ 
                         url: searchUrl, 
@@ -121,10 +122,9 @@ Apify.main(async () => {
     const crawler = new Apify.PuppeteerCrawler({
         requestQueue,
         proxyConfiguration,
-        maxConcurrency: 1, // Reducem la 1 pentru debugging
+        maxConcurrency: 1,
         maxRequestRetries: 3,
-        navigationTimeoutSecs: 120,
-        
+        navigationTimeoutSecs: 180, // Mărește la 3 minute
         // Eliminăm complet configurația launchContext și folosim browserPoolOptions
         browserPoolOptions: {
             // Configurare minimală
@@ -174,98 +174,146 @@ Apify.main(async () => {
             if (label === 'SEARCH') {
                 log.info(`Processing search results for: "${request.userData.search}" in ${request.userData.searchLocation || 'specified area'}...`);
 
-                // Wait for results container, more robust selector
-                const resultsSelector = 'div[role="feed"] > div > div[role="article"]'; // div[role=feed] contains the scrollable list
+                // Wait for results container, more robust selectors
                 try {
-                    await page.waitForSelector(resultsSelector, { timeout: 30000 }); // Increased timeout
-                    log.info('Search results container found.');
-                } catch (e) {
-                    log.warning(`Could not find search results container (${resultsSelector}) on ${request.url}. Page might be empty or layout changed.`);
-                    // Check for "No results found" message
-                    const noResults = await page.evaluate(() => document.body.innerText.includes("No results found"));
-                    if (noResults) {
-                        log.info(`No results found for the search on ${request.url}`);
-                        return; // No need to proceed
-                    }
-                    // If not "No results", maybe layout changed or blocked
-                    throw new Error(`Failed to load search results container: ${e.message}`);
-                }
-
-                // Scroll down to load more results (basic implementation)
-                // A more robust implementation would check scroll height and loop
-                await page.evaluate(async () => {
-                    const feed = document.querySelector('div[role="feed"]');
-                    if (feed) {
-                        for (let i = 0; i < 5; i++) { // Scroll down a few times
-                            feed.scrollTop = feed.scrollHeight;
-                            await new Promise(resolve => setTimeout(resolve, 1000)); // Wait for load
+                    // Adaugă un delay pentru încărcarea completă a paginii
+                    await page.waitForTimeout(5000);
+                    
+                    // Încercăm mai mulți selectori folosiți de Google Maps
+                    const possibleSelectors = [
+                        'div[role="feed"] > div > div[role="article"]',
+                        'div.section-result',
+                        'div.gm2-headline-5',
+                        'div.fontHeadlineSmall',
+                        'div.Nv2PK',
+                        'a[href*="/maps/place/"]'
+                    ];
+                    
+                    // Verifică dacă există vreun rezultat vizibil
+                    let resultsFound = false;
+                    let usedSelector = '';
+                    
+                    for (const selector of possibleSelectors) {
+                        const exists = await page.$(selector);
+                        if (exists) {
+                            log.info(`Found search results using selector: ${selector}`);
+                            resultsFound = true;
+                            usedSelector = selector;
+                            break;
                         }
                     }
-                });
-                log.info('Scrolled down search results page.');
-
-
-                // Extragere rezultate folosind DOM (more reliable than internal state)
-                const places = await page.evaluate((selector) => {
-                    const results = [];
-                    const placeElements = document.querySelectorAll(selector);
-                    placeElements.forEach(el => {
-                        const linkElement = el.querySelector('a[href*="/maps/place/"]');
-                        const url = linkElement ? linkElement.href : null;
-                        if (url) {
-                            const titleElement = el.querySelector('div.fontHeadlineSmall'); // Common selector for title
-                            const title = titleElement ? titleElement.textContent.trim() : null;
-                            // Extract Place ID from URL if possible
-                            let placeId = null;
-                            const placeIdMatch = url.match(/!1s([^!]+)/); // Regex to find Place ID pattern in URL
-                            if (placeIdMatch && placeIdMatch[1]) {
-                                placeId = placeIdMatch[1];
+                    
+                    if (!resultsFound) {
+                        log.warning('Could not find any search results using known selectors.');
+                        
+                        // Salvează screenshot pentru debugging
+                        await page.screenshot({ path: 'search-results-debug.png', fullPage: true });
+                        
+                        // Verifică dacă există mesaj "No results found"
+                        const pageContent = await page.content();
+                        const noResultsText = await page.evaluate(() => {
+                            return document.body.innerText.includes('No results found') || 
+                                   document.body.innerText.includes('Nu s-au găsit rezultate');
+                        });
+                        
+                        if (noResultsText) {
+                            log.info('Page shows "No results found" message.');
+                            return; // Exit early
+                        } else {
+                            log.error('Unknown page structure. Debug info follows:');
+                            const debugInfo = await page.evaluate(() => ({
+                                title: document.title,
+                                url: window.location.href,
+                                bodyText: document.body.innerText.substring(0, 1000)
+                            }));
+                            log.info('Page debug info:', debugInfo);
+                            throw new Error('Cannot process search results: Unknown page structure');
+                        }
+                    }
+                    
+                    // Continua cu procesarea rezultatelor folosind selectorul găsit
+                    const resultsSelector = usedSelector;
+                    
+                    // Scroll down to load more results (basic implementation)
+                    // A more robust implementation would check scroll height and loop
+                    await page.evaluate(async () => {
+                        const feed = document.querySelector('div[role="feed"]');
+                        if (feed) {
+                            for (let i = 0; i < 5; i++) { // Scroll down a few times
+                                feed.scrollTop = feed.scrollHeight;
+                                await new Promise(resolve => setTimeout(resolve, 1000)); // Wait for load
                             }
-                            results.push({ title, url, placeId });
                         }
                     });
-                    return results;
-                }, resultsSelector);
+                    log.info('Scrolled down search results page.');
 
-                log.info(`Found ${places.length} potential places on the current page.`);
 
-                if (places.length === 0) {
-                    log.warning('No place URLs extracted from the search results page. Check selectors.');
-                }
-
-                let enqueuedCount = 0;
-                for (const place of places) {
-                    // Check maxItems limit before enqueueing
-                    if (maxItems > 0 && scrapedItemsCount + enqueuedCount >= maxItems) {
-                        log.info(`maxItems limit (${maxItems}) reached. Stopping enqueueing.`);
-                        break;
-                    }
-                     // Check maxCost limit (simplified check)
-                     if (maxCostPerRun > 0) {
-                         const estimatedCost = 0.007 + (scrapedItemsCount + enqueuedCount) * 0.004; // Base + per place cost
-                         if (estimatedCost >= maxCostPerRun) {
-                             log.info(`Estimated cost ($${estimatedCost.toFixed(3)}) reached maxCostPerRun ($${maxCostPerRun}). Stopping enqueueing.`);
-                             break;
-                         }
-                     }
-
-                    if (place.url) {
-                        // Check if URL already processed or enqueued to avoid duplicates
-                        // Note: Apify's RequestQueue handles this automatically if keepUrlFragment is false (default)
-                        await requestQueue.addRequest({
-                            url: place.url,
-                            userData: { label: 'DETAIL', placeName: place.title || place.placeId || 'Unknown Place' }
+                    // Extragere rezultate folosind DOM (more reliable than internal state)
+                    const places = await page.evaluate((selector) => {
+                        const results = [];
+                        const placeElements = document.querySelectorAll(selector);
+                        placeElements.forEach(el => {
+                            const linkElement = el.querySelector('a[href*="/maps/place/"]');
+                            const url = linkElement ? linkElement.href : null;
+                            if (url) {
+                                const titleElement = el.querySelector('div.fontHeadlineSmall'); // Common selector for title
+                                const title = titleElement ? titleElement.textContent.trim() : null;
+                                // Extract Place ID from URL if possible
+                                let placeId = null;
+                                const placeIdMatch = url.match(/!1s([^!]+)/); // Regex to find Place ID pattern in URL
+                                if (placeIdMatch && placeIdMatch[1]) {
+                                    placeId = placeIdMatch[1];
+                                }
+                                results.push({ title, url, placeId });
+                            }
                         });
-                        enqueuedCount++;
+                        return results;
+                    }, resultsSelector);
+
+                    log.info(`Found ${places.length} potential places on the current page.`);
+
+                    if (places.length === 0) {
+                        log.warning('No place URLs extracted from the search results page. Check selectors.');
                     }
+
+                    let enqueuedCount = 0;
+                    for (const place of places) {
+                        // Check maxItems limit before enqueueing
+                        if (maxItems > 0 && scrapedItemsCount + enqueuedCount >= maxItems) {
+                            log.info(`maxItems limit (${maxItems}) reached. Stopping enqueueing.`);
+                            break;
+                        }
+                         // Check maxCost limit (simplified check)
+                         if (maxCostPerRun > 0) {
+                             const estimatedCost = 0.007 + (scrapedItemsCount + enqueuedCount) * 0.004; // Base + per place cost
+                             if (estimatedCost >= maxCostPerRun) {
+                                 log.info(`Estimated cost ($${estimatedCost.toFixed(3)}) reached maxCostPerRun ($${maxCostPerRun}). Stopping enqueueing.`);
+                                 break;
+                             }
+                         }
+
+                        if (place.url) {
+                            // Check if URL already processed or enqueued to avoid duplicates
+                            // Note: Apify's RequestQueue handles this automatically if keepUrlFragment is false (default)
+                            await requestQueue.addRequest({
+                                url: place.url,
+                                userData: { label: 'DETAIL', placeName: place.title || place.placeId || 'Unknown Place' }
+                            });
+                            enqueuedCount++;
+                        }
+                    }
+                    log.info(`Enqueued ${enqueuedCount} detail page requests.`);
+
+                    // Check if we need to paginate (find next page button)
+                    // Pagination logic is complex on Maps, often infinite scroll is used.
+                    // The scrolling implemented above is a basic form. A robust solution
+                    // might need to detect the end of results or handle explicit "Next" buttons if they appear.
+
+
+                } catch (e) {
+                    log.error(`Error processing search page: ${e.message}`);
+                    throw e;
                 }
-                log.info(`Enqueued ${enqueuedCount} detail page requests.`);
-
-                // Check if we need to paginate (find next page button)
-                // Pagination logic is complex on Maps, often infinite scroll is used.
-                // The scrolling implemented above is a basic form. A robust solution
-                // might need to detect the end of results or handle explicit "Next" buttons if they appear.
-
 
             } else if (label === 'DETAIL') {
                 // Check maxItems limit before processing
