@@ -1,11 +1,11 @@
 const Apify = require('apify');
 const { log } = Apify.utils;
-const puppeteer = require('puppeteer-extra');
 
 // Funcție pentru extragerea datelor de contact de pe un website
 exports.extractContactDetails = async (websiteUrl, proxyConfiguration) => {
     log.info(`Extracting contact details from: ${websiteUrl}`);
     
+    // Folosim Puppeteer din Apify în loc de puppeteer-extra
     const browser = await Apify.launchPuppeteer({
         useChrome: true,
         stealth: true,
