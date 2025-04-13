@@ -517,300 +517,255 @@ Apify.main(async () => {
                     log.warning('Could not extract coordinates from the page. Search around this location skipped.');
                 }
             } else if (label === 'DETAIL') {
-                // Check maxItems limit before processing
-                if (maxCrawledPlaces > 0 && scrapedItemsCount >= maxCrawledPlaces) {
-                    log.info(`maxItems limit (${maxCrawledPlaces}) reached. Skipping detail processing for ${request.url}`);
-                    return; // Stop processing further details
-                }
-                 // Check maxCost limit before processing
-                 if (maxCostPerRun > 0) {
-                     const estimatedCost = 0.007 + scrapedItemsCount * 0.004;
-                     if (estimatedCost >= maxCostPerRun) {
-                         log.info(`Estimated cost ($${estimatedCost.toFixed(3)}) reached maxCostPerRun ($${maxCostPerRun}). Skipping detail processing for ${request.url}`);
-                         return;
-                     }
-                 }
-
-                // Înlocuiește secțiunea de extragere a detaliilor locației cu această versiune extinsă:
-
-                // Extrage programul de funcționare
-                const openingHours = await page.evaluate(() => {
+                try {
+                    log.info(`▶️ Extracting details for: ${request.userData.placeName} from ${request.url}`);
+                    
+                    // Inițializează obiectul placeData la începutul blocului
+                    const placeData = {
+                        scrapedUrl: request.url,
+                        name: request.userData.placeName || 'Unknown Place',
+                        category: null,
+                        address: null,
+                        phone: null,
+                        website: null,
+                        googleUrl: request.url,
+                        placeId: null,
+                        coordinates: { lat: null, lng: null },
+                        openingHoursStatus: null,
+                        openingHours: null,
+                        plusCode: null,
+                        status: 'Operational',
+                        imageUrls: [],
+                        reviews: [],
+                        email: null,
+                        socialProfiles: {}
+                    };
+                    
+                    // Extrage ID-ul locației din URL
                     try {
-                        // Caută după butoanele din secțiunea de orar
-                        const hoursButtons = Array.from(document.querySelectorAll('button[data-item-id*="oh"]'));
-                        if (hoursButtons.length > 0) {
-                            // Dacă găsim buton de orar, verificăm starea curentă
-                            const statusText = hoursButtons[0].textContent.trim();
-                            
-                            // Încercăm să găsim orarul complet
-                            let fullSchedule = null;
-                            
-                            // Opțional: Click pentru a deschide orarul complet și a-l extrage
-                            // hoursButtons[0].click();
-                            // await page.waitForTimeout(1000); // Așteaptă deschiderea panoului
-                            
-                            // Găsim toate elementele ce conțin zile și ore
-                            const scheduleItems = Array.from(document.querySelectorAll('table[class*="eK4R0e"] tr'));
-                            if (scheduleItems.length > 0) {
-                                fullSchedule = scheduleItems.map(item => {
-                                    const dayEl = item.querySelector('td:first-child');
-                                    const hoursEl = item.querySelector('td:nth-child(2)');
-                                    if (dayEl && hoursEl) {
-                                        return {
-                                            day: dayEl.textContent.trim(),
-                                            hours: hoursEl.textContent.trim()
-                                        };
-                                    }
-                                    return null;
-                                }).filter(Boolean);
-                            }
-                            
-                            return {
-                                status: statusText,
-                                fullSchedule
+                        const placeIdMatch = request.url.match(/!1s([^!]+)/);
+                        if (placeIdMatch && placeIdMatch[1]) {
+                            placeData.placeId = placeIdMatch[1];
+                        }
+                    } catch (error) {
+                        log.warning(`Could not extract place ID from URL: ${error.message}`);
+                    }
+                    
+                    // Extrage coordonatele
+                    try {
+                        const coordsMatch = request.url.match(/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/);
+                        if (coordsMatch && coordsMatch.length === 3) {
+                            placeData.coordinates = {
+                                lat: parseFloat(coordsMatch[1]),
+                                lng: parseFloat(coordsMatch[2])
                             };
                         }
-                        return null;
-                    } catch (e) {
-                        console.error('Error extracting opening hours:', e);
-                        return null;
+                    } catch (error) {
+                        log.warning(`Could not extract coordinates from URL: ${error.message}`);
                     }
-                });
-
-                // Extrage Plus Code
-                const plusCode = await page.evaluate(() => {
-                    try {
-                        // Caută după element ce conține plus code
-                        const plusCodeElements = document.querySelectorAll('button[data-item-id*="oloc"]');
-                        return plusCodeElements.length > 0 ? plusCodeElements[0].textContent.trim() : null;
-                    } catch (e) {
-                        console.error('Error extracting plus code:', e);
-                        return null;
-                    }
-                });
-
-                // Extrage imagini
-                const imageUrls = [];
-                if (maxImages > 0) {
-                    try {
-                        // Click pe prima imagine pentru a deschide galeria
-                        const firstImgSelector = 'button[data-item-id*="image"]';
-                        const hasImages = await page.$(firstImgSelector);
-                        
-                        if (hasImages) {
-                            // Click pe imagine pentru a deschide galeria
-                            await Promise.all([
-                                page.click(firstImgSelector),
-                                page.waitForSelector('div[data-photo-index]', { timeout: 5000 })
-                            ]).catch(() => log.warning('Could not open the image gallery'));
-                            
-                            // Extrage URL-uri de imagini din galerie
-                            const extractedImageUrls = await page.evaluate((maxImg) => {
-                                const imgUrls = [];
-                                const imgElements = document.querySelectorAll('img[src*="googleusercontent"]');
-                                
-                                imgElements.forEach(img => {
-                                    if (imgUrls.length < maxImg && img.src) {
-                                        // Optimizare: Înlocuiește cu URL-ul la rezoluție mai mare
-                                        const highResUrl = img.src.replace(/=w\d+-h\d+/, '=w1200-h1200');
-                                        imgUrls.push(highResUrl);
-                                    }
-                                });
-                                
-                                return imgUrls;
-                            }, maxImages);
-                            
-                            imageUrls.push(...extractedImageUrls);
-                            log.info(`Extracted ${imageUrls.length} image URLs`);
-                            
-                            // Închide galeria
-                            await Promise.all([
-                                page.click('button[aria-label="Back"]'),
-                                page.waitForSelector(firstImgSelector, { timeout: 5000 })
-                            ]).catch(() => log.warning('Could not close the image gallery'));
-                        } else {
-                            log.info('No images found for this place');
-                        }
-                    } catch (e) {
-                        log.warning(`Error extracting images: ${e.message}`);
-                    }
-                }
-
-                // Extragerea profilurilor sociale din pagina de locație
-                const socialProfiles = await page.evaluate(() => {
-                    const profiles = {};
                     
-                    // Căutăm toate butoanele care ar putea conține linkuri sociale
-                    const buttons = document.querySelectorAll('a[data-item-id], button[data-item-id]');
-                    
-                    buttons.forEach(button => {
-                        const text = button.textContent.toLowerCase();
-                        const href = button.href || '';
+                    // Extrage numele, categoria, adresa, telefonul, website-ul
+                    const basicDetails = await page.evaluate(() => {
+                        const details = {};
                         
-                        // Detectare platforme sociale comune
-                        if (text.includes('facebook') || href.includes('facebook.com')) {
-                            profiles.facebook = href || 'detected but no URL';
-                        }
-                        if (text.includes('instagram') || href.includes('instagram.com')) {
-                            profiles.instagram = href || 'detected but no URL';
-                        }
-                        if (text.includes('twitter') || href.includes('twitter.com') || href.includes('x.com')) {
-                            profiles.twitter = href || 'detected but no URL';
-                        }
-                        if (text.includes('linkedin') || href.includes('linkedin.com')) {
-                            profiles.linkedin = href || 'detected but no URL';
-                        }
-                        if (text.includes('youtube') || href.includes('youtube.com')) {
-                            profiles.youtube = href || 'detected but no URL';
+                        // Nume
+                        const nameElement = document.querySelector('h1.fontHeadlineLarge');
+                        details.name = nameElement ? nameElement.textContent.trim() : null;
+                        
+                        // Categoria
+                        const categoryElement = document.querySelector('button[jsaction*="pane.rating.category"]');
+                        details.category = categoryElement ? categoryElement.textContent.trim() : null;
+                        
+                        // Adresa
+                        const addressElement = document.querySelector('button[data-item-id*="address"]');
+                        details.address = addressElement ? addressElement.textContent.trim() : null;
+                        
+                        // Telefon
+                        const phoneElement = document.querySelector('button[data-item-id*="phone"]');
+                        details.phone = phoneElement ? phoneElement.textContent.trim() : null;
+                        
+                        // Website
+                        const websiteElement = document.querySelector('a[data-item-id*="authority"]');
+                        details.website = websiteElement && websiteElement.href ? websiteElement.href : null;
+                        
+                        return details;
+                    });
+                    
+                    // Actualizează obiectul placeData cu datele de bază
+                    Object.assign(placeData, basicDetails);
+                    
+                    // Extrage programul de funcționare
+                    const openingHours = await page.evaluate(() => {
+                        try {
+                            // Caută după butoanele din secțiunea de orar
+                            const hoursButtons = Array.from(document.querySelectorAll('button[data-item-id*="oh"]'));
+                            if (hoursButtons.length > 0) {
+                                // Dacă găsim buton de orar, verificăm starea curentă
+                                const statusText = hoursButtons[0].textContent.trim();
+                                
+                                // Încercăm să găsim orarul complet
+                                let fullSchedule = null;
+                                
+                                // Găsim toate elementele ce conțin zile și ore
+                                const scheduleItems = Array.from(document.querySelectorAll('table[class*="eK4R0e"] tr'));
+                                if (scheduleItems.length > 0) {
+                                    fullSchedule = scheduleItems.map(item => {
+                                        const dayEl = item.querySelector('td:first-child');
+                                        const hoursEl = item.querySelector('td:nth-child(2)');
+                                        if (dayEl && hoursEl) {
+                                            return {
+                                                day: dayEl.textContent.trim(),
+                                                hours: hoursEl.textContent.trim()
+                                            };
+                                        }
+                                        return null;
+                                    }).filter(Boolean);
+                                }
+                                
+                                return {
+                                    status: statusText,
+                                    fullSchedule
+                                };
+                            }
+                            return null;
+                        } catch (e) {
+                            console.error('Error extracting opening hours:', e);
+                            return null;
                         }
                     });
                     
-                    return profiles;
-                });
-
-                // Actualizează placeData cu informațiile noi
-                placeData.openingHoursStatus = openingHours ? openingHours.status : null;
-                placeData.openingHours = openingHours && openingHours.fullSchedule ? openingHours.fullSchedule : null;
-                placeData.plusCode = plusCode;
-                placeData.imageUrls = imageUrls;
-                placeData.socialProfiles = { ...placeData.socialProfiles, ...socialProfiles };
-
-
-                // Add Place ID if extracted separately
-                const placeIdFromUrl = request.url.match(/!1s([^!]+)/);
-                 if (!placeData.placeId && placeIdFromUrl && placeIdFromUrl[1]) {
-                     placeData.placeId = placeIdFromUrl[1];
-                 }
-
-
-                // 7. Extract Reviews if requested
-                placeData.reviews = [];
-                if (maxReviews > 0) {
-                    log.info(`Attempting to extract reviews for ${placeName}...`);
-                    const reviewsButtonSelector = 'button[jsaction*="pane.reviewChart.moreReviews"], button[aria-label*="Reviews for"]'; // Try multiple selectors
-                    try {
-                        await randomDelay(1000, 3000);
-                        const reviewsButton = await page.$(reviewsButtonSelector);
-                        if (reviewsButton) {
-                            await page.click(reviewsButtonSelector);
-                            log.info('Clicked "See all reviews" button.');
-                            // Wait for the reviews section/dialog to appear
-                            const reviewsSectionSelector = 'div[jsaction*="pane.reviewList"]'; // Selector for the reviews container
-                            await page.waitForSelector(reviewsSectionSelector, { timeout: 15000 });
-                            log.info('Reviews section loaded.');
-
-                            // Scroll through reviews
-                            let currentReviewCount = 0;
-                            let lastReviewCount = -1;
-                            let scrollAttempts = 0;
-                            const maxScrollAttempts = 20; // Limit scroll attempts to prevent infinite loops
-
-                            while (scrollAttempts < maxScrollAttempts) {
-                                currentReviewCount = await page.$$eval('div[data-review-id]', reviews => reviews.length);
-                                log.debug(`Found ${currentReviewCount} reviews after scroll.`);
-
-                                if (maxReviews > 0 && currentReviewCount >= maxReviews) {
-                                    log.info(`Reached maxReviews limit (${maxReviews}).`);
-                                    break;
-                                }
-                                if (currentReviewCount === lastReviewCount) {
-                                     log.info('No new reviews loaded after scroll, stopping scroll.');
-                                     break; // No new reviews loaded
-                                }
-
-                                lastReviewCount = currentReviewCount;
-
-                                // Scroll the review pane
-                                await page.evaluate((selector) => {
-                                    const scrollableElement = document.querySelector(selector);
-                                    if (scrollableElement) {
-                                        scrollableElement.scrollTop = scrollableElement.scrollHeight;
-                                    }
-                                }, reviewsSectionSelector);
-
-                                await page.waitForTimeout(1500 + Math.random() * 1000); // Wait for reviews to load (randomized)
-                                scrollAttempts++;
-                            }
-
-
-                            // Extract review details
-                            placeData.reviews = await page.evaluate((maxRev, includeRevInfo, reviewSectionSel) => {
-                                const reviews = [];
-                                const reviewElements = document.querySelectorAll(`${reviewSectionSel} div[data-review-id]`);
-
-                                reviewElements.forEach((el, index) => {
-                                    if (maxRev > 0 && index >= maxRev) return;
-
-                                    const review = {};
-                                    review.reviewId = el.getAttribute('data-review-id');
-                                    review.text = el.querySelector('span.wiI7pd')?.textContent.trim() || null; // Review text
-                                    review.rating = null;
-                                    const starsElement = el.querySelector('span.kvMYJc[aria-label]'); // Stars element
-                                    if (starsElement) {
-                                        const starsMatch = starsElement.getAttribute('aria-label').match(/(\d+)\s+star/);
-                                        if (starsMatch) {
-                                            review.rating = parseInt(starsMatch[1], 10);
-                                        }
-                                    }
-                                    review.relativeDate = el.querySelector('span.rsqaWe')?.textContent.trim() || null; // e.g., "a month ago"
-
-                                    if (includeRevInfo) {
-                                        review.reviewerName = el.querySelector('div.d4r55')?.textContent.trim() || null;
-                                        review.reviewerProfileUrl = el.querySelector('button[jsaction*="pane.review.reviewerLink"]')?.getAttribute('data-href') || null; // May need adjustment
-                                        // Extracting reviewer photo, review count, local guide status requires more selectors
-                                    }
-
-                                    // Owner reply
-                                    const replyElement = el.querySelector('div.PBK6be');
-                                    if (replyElement) {
-                                        review.ownerReply = replyElement.querySelector('span.wiI7pd')?.textContent.trim() || null;
-                                        review.ownerReplyRelativeDate = replyElement.querySelector('span.rsqaWe')?.textContent.trim() || null;
-                                    }
-
-                                    reviews.push(review);
-                                });
-                                return reviews;
-
-                            }, maxReviews, includeReviewerInfo, reviewsSectionSelector);
-                            log.info(`Extracted ${placeData.reviews.length} reviews.`);
-
-                            // Optional: Click back button if reviews opened in a modal/overlay
-                            // await page.click('button[aria-label="Back"]');
-
-                        } else {
-                            log.warning('Could not find the "See all reviews" button.');
+                    if (openingHours) {
+                        placeData.openingHoursStatus = openingHours.status;
+                        placeData.openingHours = openingHours.fullSchedule;
+                    }
+                    
+                    // Extrage Plus Code
+                    const plusCode = await page.evaluate(() => {
+                        try {
+                            // Caută după element ce conține plus code
+                            const plusCodeElements = document.querySelectorAll('button[data-item-id*="oloc"]');
+                            return plusCodeElements.length > 0 ? plusCodeElements[0].textContent.trim() : null;
+                        } catch (e) {
+                            console.error('Error extracting plus code:', e);
+                            return null;
                         }
-                    } catch (e) {
-                        log.error(`Error extracting reviews: ${e.message}`);
-                        // Continue without reviews if extraction fails
+                    });
+                    
+                    placeData.plusCode = plusCode;
+                    
+                    // Extrage imagini
+                    if (input.maxImages > 0) {
+                        try {
+                            // Click pe prima imagine pentru a deschide galeria
+                            const firstImgSelector = 'button[data-item-id*="image"]';
+                            const hasImages = await page.$(firstImgSelector);
+                            
+                            if (hasImages) {
+                                // Click pe imagine pentru a deschide galeria
+                                await Promise.all([
+                                    page.click(firstImgSelector),
+                                    page.waitForSelector('div[data-photo-index]', { timeout: 5000 })
+                                ]).catch(() => log.warning('Could not open the image gallery'));
+                                
+                                // Extrage URL-uri de imagini din galerie
+                                const extractedImageUrls = await page.evaluate((maxImg) => {
+                                    const imgUrls = [];
+                                    const imgElements = document.querySelectorAll('img[src*="googleusercontent"]');
+                                    
+                                    imgElements.forEach(img => {
+                                        if (imgUrls.length < maxImg && img.src) {
+                                            // Optimizare: Înlocuiește cu URL-ul la rezoluție mai mare
+                                            const highResUrl = img.src.replace(/=w\d+-h\d+/, '=w1200-h1200');
+                                            imgUrls.push(highResUrl);
+                                        }
+                                    });
+                                    
+                                    return imgUrls;
+                                }, input.maxImages || 5);
+                                
+                                placeData.imageUrls = extractedImageUrls;
+                                log.info(`Extracted ${placeData.imageUrls.length} image URLs`);
+                                
+                                // Închide galeria
+                                await Promise.all([
+                                    page.click('button[aria-label="Back"]'),
+                                    page.waitForSelector(firstImgSelector, { timeout: 5000 })
+                                ]).catch(() => log.warning('Could not close the image gallery'));
+                            } else {
+                                log.info('No images found for this place');
+                            }
+                        } catch (e) {
+                            log.warning(`Error extracting images: ${e.message}`);
+                        }
                     }
-                }
-
-
-                // 8. Extract Contact Details from Website (Optional, requires utils/extract-contact.js)
-                placeData.email = null;
-                placeData.socialProfiles = {};
-                /* // Uncomment this section if you implement extract-contact.js
-                if (placeData.website) {
-                    log.info(`Attempting to extract contact details from website: ${placeData.website}`);
-                    try {
-                        // Use the helper function (you need to create this file and function)
-                        const contactDetails = await extractContactDetails(placeData.website, proxyConfiguration);
-                        placeData.email = contactDetails.email;
-                        placeData.socialProfiles = contactDetails.socialProfiles;
-                        log.info(`Extracted from website: Email - ${placeData.email}, Social - ${Object.keys(placeData.socialProfiles).length}`);
-                    } catch (err) {
-                        log.warning(`Failed to extract contact details from ${placeData.website}: ${err.message}`);
+                    
+                    // Extragerea profilurilor sociale din pagina de locație
+                    const socialProfiles = await page.evaluate(() => {
+                        const profiles = {};
+                        
+                        // Căutăm toate butoanele care ar putea conține linkuri sociale
+                        const buttons = document.querySelectorAll('a[data-item-id], button[data-item-id]');
+                        
+                        buttons.forEach(button => {
+                            const text = button.textContent.toLowerCase();
+                            const href = button.href || '';
+                            
+                            // Detectare platforme sociale comune
+                            if (text.includes('facebook') || href.includes('facebook.com')) {
+                                profiles.facebook = href || 'detected but no URL';
+                            }
+                            if (text.includes('instagram') || href.includes('instagram.com')) {
+                                profiles.instagram = href || 'detected but no URL';
+                            }
+                            if (text.includes('twitter') || href.includes('twitter.com') || href.includes('x.com')) {
+                                profiles.twitter = href || 'detected but no URL';
+                            }
+                            if (text.includes('linkedin') || href.includes('linkedin.com')) {
+                                profiles.linkedin = href || 'detected but no URL';
+                            }
+                            if (text.includes('youtube') || href.includes('youtube.com')) {
+                                profiles.youtube = href || 'detected but no URL';
+                            }
+                        });
+                        
+                        return profiles;
+                    });
+                    
+                    placeData.socialProfiles = { ...placeData.socialProfiles, ...socialProfiles };
+                    
+                    // Extract Contact Details from Website
+                    if (input.scrapeContacts && placeData.website) {
+                        log.info(`Attempting to extract contact details from website: ${placeData.website}`);
+                        try {
+                            // Use the helper function
+                            const contactDetails = await extractContactDetails(placeData.website, proxyConfiguration);
+                            if (contactDetails.email) {
+                                placeData.email = contactDetails.email;
+                            }
+                            placeData.socialProfiles = { ...placeData.socialProfiles, ...contactDetails.socialProfiles };
+                            log.info(`Extracted from website: Email - ${placeData.email}, Social - ${Object.keys(placeData.socialProfiles).length}`);
+                        } catch (err) {
+                            log.warning(`Failed to extract contact details from ${placeData.website}: ${err.message}`);
+                        }
                     }
+                    
+                    // Extrage recenzii
+                    if (input.maxReviews > 0) {
+                        try {
+                            // TODO: Adaugă cod pentru extragerea recenziilor
+                            // ...
+                        } catch (e) {
+                            log.warning(`Error extracting reviews: ${e.message}`);
+                        }
+                    }
+                    
+                    // Salvează rezultatul
+                    await Apify.pushData(placeData);
+                    log.info(`✅ Successfully scraped ${placeData.name}. Total scraped: ${++scrapedItemsCount}`);
+                } catch (error) {
+                    log.error(`Error processing place detail: ${error.message}`);
+                    throw error;  // Retransmite eroarea pentru a fi gestionată de handleFailedRequestFunction
                 }
-                */
-
-                // 9. Salvează datele extrase
-                await Apify.pushData(placeData);
-                scrapedItemsCount++;
-                await Apify.setValue('STATE', { scrapedItemsCount }); // Persist count
-                log.info(`✅ Successfully scraped ${placeName}. Total scraped: ${scrapedItemsCount}`);
-
             }
         },
 
