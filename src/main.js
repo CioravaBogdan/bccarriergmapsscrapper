@@ -94,16 +94,30 @@ Apify.main(async () => {
         const searchTermEncoded = encodeURIComponent(searchStringsArray.join(' '));
         
         // Verifică dacă avem coordonate specifice
-        if (customGeolocation) {
-            const { latitude, longitude } = customGeolocation;
-            const searchUrl = `https://www.google.com/maps/search/${searchTermEncoded}/@${latitude},${longitude},14z`;
+        if (customGeolocation && customGeolocation.coordinates && customGeolocation.coordinates.length === 2) {
+            // GeoJSON folosește formatul [longitude, latitude]
+            const longitude = customGeolocation.coordinates[0];
+            const latitude = customGeolocation.coordinates[1];
+
+            // Adaugă această verificare înainte de a crea URL-ul
+
+            if (latitude === undefined || longitude === undefined) {
+                log.error("Invalid coordinates in customGeolocation. Coordinates must be provided as [longitude, latitude] array.");
+                throw new Error("Invalid coordinates format");
+            }
+
+            const zoom = 15 - Math.min(Math.floor((customGeolocation.radiusKm || 5) / 2), 10);
+            
+            const searchUrl = `https://www.google.com/maps/search/${searchTermEncoded}/@${latitude},${longitude},${zoom}z`;
             log.info(`Adding search URL with coordinates: ${searchUrl}`);
+            
             await requestQueue.addRequest({ 
                 url: searchUrl, 
                 userData: { 
                     label: 'SEARCH', 
                     search: searchStringsArray.join(', '), 
-                    coordinates: { lat: latitude, lng: longitude } 
+                    coordinates: { lat: latitude, lng: longitude },
+                    searchRadius: customGeolocation.radiusKm || 5
                 } 
             });
         } 
