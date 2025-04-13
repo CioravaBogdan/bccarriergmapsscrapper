@@ -1,8 +1,8 @@
 // Importăm SDK-ul Apify și extragem utilitarele necesare
 const Apify = require('apify');
-const { log } = Apify.utils;  // utilitar pentru logging unificat
-// Importăm funcția auxiliară pentru extragerea contactelor (dacă există)
-// const { extractContactDetails } = require('./utils/extract-contact'); // Comentat - activați dacă creați fișierul utils
+const { log } = Apify.utils;
+// Importăm funcția auxiliară pentru extragerea contactelor
+const { extractContactDetails } = require('./utils/extract-contact');
 
 // Randomized delay function to mimic human behavior
 const randomDelay = async (min = 2000, max = 5000) => {
@@ -531,131 +531,150 @@ Apify.main(async () => {
                      }
                  }
 
-                // Înlocuiește secțiunea de extragere a datelor din handlePageFunction
+                // Înlocuiește secțiunea de extragere a detaliilor locației cu această versiune extinsă:
 
-                // Așteaptă încărcarea completă a paginii
-                await page.waitForSelector('h1', { timeout: 20000 }).catch(() => {
-                    log.warning('Timeout waiting for h1 element - page might not have loaded properly');
-                });
-
-                // Așteaptă puțin în plus pentru elementele care se încarcă dinamic
-                await page.waitForTimeout(2000);
-
-                // Extrage numele localului
-                const placeName = await page.evaluate(() => {
-                    const h1 = document.querySelector('h1');
-                    return h1 ? h1.textContent.trim() : 'Unknown Place';
-                }).catch(() => 'Unknown Place');
-
-                log.info(`▶️ Extracting details for: ${placeName} from ${request.url}`);
-
-                // Extrage categoria
-                const category = await page.evaluate(() => {
-                    const categoryElement = document.querySelector('button[jsaction*="pane.rating.category"]');
-                    return categoryElement ? categoryElement.textContent.trim() : null;
-                }).catch(() => null);
-
-                // Extrage adresa
-                const address = await page.evaluate(() => {
-                    const addressElements = Array.from(document.querySelectorAll('button[data-item-id*="address"]'));
-                    return addressElements.length > 0 ? addressElements[0].textContent.trim() : null;
-                }).catch(() => null);
-
-                // Extrage numărul de telefon
-                const phone = await page.evaluate(() => {
-                    const phoneElements = Array.from(document.querySelectorAll('button[data-item-id*="phone"]'));
-                    return phoneElements.length > 0 ? phoneElements[0].textContent.trim() : null;
-                }).catch(() => null);
-
-                // Extrage website
-                const website = await page.evaluate(() => {
-                    const websiteElements = Array.from(document.querySelectorAll('a[data-item-id*="authority"]'));
-                    return websiteElements.length > 0 ? websiteElements[0].href : null;
-                }).catch(() => null);
-
-                // Extrage coordonatele din URL și din metadate
-                const coordinates = await page.evaluate(() => {
+                // Extrage programul de funcționare
+                const openingHours = await page.evaluate(() => {
                     try {
-                        // Metodă 1: Caută în URL
-                        const urlMatch = window.location.href.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
-                        if (urlMatch && urlMatch.length >= 3) {
+                        // Caută după butoanele din secțiunea de orar
+                        const hoursButtons = Array.from(document.querySelectorAll('button[data-item-id*="oh"]'));
+                        if (hoursButtons.length > 0) {
+                            // Dacă găsim buton de orar, verificăm starea curentă
+                            const statusText = hoursButtons[0].textContent.trim();
+                            
+                            // Încercăm să găsim orarul complet
+                            let fullSchedule = null;
+                            
+                            // Opțional: Click pentru a deschide orarul complet și a-l extrage
+                            // hoursButtons[0].click();
+                            // await page.waitForTimeout(1000); // Așteaptă deschiderea panoului
+                            
+                            // Găsim toate elementele ce conțin zile și ore
+                            const scheduleItems = Array.from(document.querySelectorAll('table[class*="eK4R0e"] tr'));
+                            if (scheduleItems.length > 0) {
+                                fullSchedule = scheduleItems.map(item => {
+                                    const dayEl = item.querySelector('td:first-child');
+                                    const hoursEl = item.querySelector('td:nth-child(2)');
+                                    if (dayEl && hoursEl) {
+                                        return {
+                                            day: dayEl.textContent.trim(),
+                                            hours: hoursEl.textContent.trim()
+                                        };
+                                    }
+                                    return null;
+                                }).filter(Boolean);
+                            }
+                            
                             return {
-                                lat: parseFloat(urlMatch[1]),
-                                lng: parseFloat(urlMatch[2])
+                                status: statusText,
+                                fullSchedule
                             };
                         }
-                        
-                        // Metodă 2: Caută în metadatele paginii
-                        const metaViewport = document.querySelector('meta[property="og:image"]');
-                        if (metaViewport) {
-                            const content = metaViewport.getAttribute('content');
-                            const coordMatch = content.match(/center=(-?\d+\.\d+)%2C(-?\d+\.\d+)/);
-                            if (coordMatch && coordMatch.length >= 3) {
-                                return {
-                                    lat: parseFloat(coordMatch[1]),
-                                    lng: parseFloat(coordMatch[2])
-                                };
-                            }
-                        }
-                        
-                        // Metodă 3: Caută în scripturile din pagină
-                        const scripts = Array.from(document.querySelectorAll('script'));
-                        for (const script of scripts) {
-                            if (!script.textContent) continue;
-                            
-                            // Caută pattern-ul pentru coordonate
-                            const latMatch = script.textContent.match(/"latitude":(-?\d+\.\d+)/);
-                            const lngMatch = script.textContent.match(/"longitude":(-?\d+\.\d+)/);
-                            
-                            if (latMatch && lngMatch) {
-                                return {
-                                    lat: parseFloat(latMatch[1]),
-                                    lng: parseFloat(lngMatch[2])
-                                };
-                            }
-                        }
-                        
-                        // Metodă 4: Verificare shorturls (maps.app.goo.gl)
-                        if (window.location.href.includes('maps.app.goo.gl')) {
-                            // Pentru linkurile scurte, verifică dacă a fost redirecționat către URL cu coordonate
-                            const canonicalUrl = document.querySelector('link[rel="canonical"]')?.href;
-                            if (canonicalUrl) {
-                                const canonicalMatch = canonicalUrl.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
-                                if (canonicalMatch) {
-                                    return {
-                                        lat: parseFloat(canonicalMatch[1]),
-                                        lng: parseFloat(canonicalMatch[2])
-                                    };
-                                }
-                            }
-                        }
-                        
-                        return { lat: 0, lng: 0 }; // fallback
+                        return null;
                     } catch (e) {
-                        console.error('Error extracting coordinates:', e);
-                        return { lat: 0, lng: 0 };
+                        console.error('Error extracting opening hours:', e);
+                        return null;
                     }
                 });
 
-                // Actualizează placeData cu coordonatele extrase
-                const placeData = {
-                    scrapedUrl: request.url,
-                    name: placeName,
-                    category: category,
-                    address: address,
-                    phone: phone,
-                    website: website,
-                    googleUrl: request.url,
-                    placeId: null, // Vom extrage mai târziu
-                    coordinates: coordinates,
-                    openingHoursStatus: null,
-                    plusCode: null,
-                    status: "Operational",
-                    imageUrls: [],
-                    reviews: [],
-                    email: null,
-                    socialProfiles: {}
-                };
+                // Extrage Plus Code
+                const plusCode = await page.evaluate(() => {
+                    try {
+                        // Caută după element ce conține plus code
+                        const plusCodeElements = document.querySelectorAll('button[data-item-id*="oloc"]');
+                        return plusCodeElements.length > 0 ? plusCodeElements[0].textContent.trim() : null;
+                    } catch (e) {
+                        console.error('Error extracting plus code:', e);
+                        return null;
+                    }
+                });
+
+                // Extrage imagini
+                const imageUrls = [];
+                if (maxImages > 0) {
+                    try {
+                        // Click pe prima imagine pentru a deschide galeria
+                        const firstImgSelector = 'button[data-item-id*="image"]';
+                        const hasImages = await page.$(firstImgSelector);
+                        
+                        if (hasImages) {
+                            // Click pe imagine pentru a deschide galeria
+                            await Promise.all([
+                                page.click(firstImgSelector),
+                                page.waitForSelector('div[data-photo-index]', { timeout: 5000 })
+                            ]).catch(() => log.warning('Could not open the image gallery'));
+                            
+                            // Extrage URL-uri de imagini din galerie
+                            const extractedImageUrls = await page.evaluate((maxImg) => {
+                                const imgUrls = [];
+                                const imgElements = document.querySelectorAll('img[src*="googleusercontent"]');
+                                
+                                imgElements.forEach(img => {
+                                    if (imgUrls.length < maxImg && img.src) {
+                                        // Optimizare: Înlocuiește cu URL-ul la rezoluție mai mare
+                                        const highResUrl = img.src.replace(/=w\d+-h\d+/, '=w1200-h1200');
+                                        imgUrls.push(highResUrl);
+                                    }
+                                });
+                                
+                                return imgUrls;
+                            }, maxImages);
+                            
+                            imageUrls.push(...extractedImageUrls);
+                            log.info(`Extracted ${imageUrls.length} image URLs`);
+                            
+                            // Închide galeria
+                            await Promise.all([
+                                page.click('button[aria-label="Back"]'),
+                                page.waitForSelector(firstImgSelector, { timeout: 5000 })
+                            ]).catch(() => log.warning('Could not close the image gallery'));
+                        } else {
+                            log.info('No images found for this place');
+                        }
+                    } catch (e) {
+                        log.warning(`Error extracting images: ${e.message}`);
+                    }
+                }
+
+                // Extragerea profilurilor sociale din pagina de locație
+                const socialProfiles = await page.evaluate(() => {
+                    const profiles = {};
+                    
+                    // Căutăm toate butoanele care ar putea conține linkuri sociale
+                    const buttons = document.querySelectorAll('a[data-item-id], button[data-item-id]');
+                    
+                    buttons.forEach(button => {
+                        const text = button.textContent.toLowerCase();
+                        const href = button.href || '';
+                        
+                        // Detectare platforme sociale comune
+                        if (text.includes('facebook') || href.includes('facebook.com')) {
+                            profiles.facebook = href || 'detected but no URL';
+                        }
+                        if (text.includes('instagram') || href.includes('instagram.com')) {
+                            profiles.instagram = href || 'detected but no URL';
+                        }
+                        if (text.includes('twitter') || href.includes('twitter.com') || href.includes('x.com')) {
+                            profiles.twitter = href || 'detected but no URL';
+                        }
+                        if (text.includes('linkedin') || href.includes('linkedin.com')) {
+                            profiles.linkedin = href || 'detected but no URL';
+                        }
+                        if (text.includes('youtube') || href.includes('youtube.com')) {
+                            profiles.youtube = href || 'detected but no URL';
+                        }
+                    });
+                    
+                    return profiles;
+                });
+
+                // Actualizează placeData cu informațiile noi
+                placeData.openingHoursStatus = openingHours ? openingHours.status : null;
+                placeData.openingHours = openingHours && openingHours.fullSchedule ? openingHours.fullSchedule : null;
+                placeData.plusCode = plusCode;
+                placeData.imageUrls = imageUrls;
+                placeData.socialProfiles = { ...placeData.socialProfiles, ...socialProfiles };
+
 
                 // Add Place ID if extracted separately
                 const placeIdFromUrl = request.url.match(/!1s([^!]+)/);

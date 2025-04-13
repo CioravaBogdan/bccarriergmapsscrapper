@@ -1,73 +1,123 @@
 const Apify = require('apify');
 const { log } = Apify.utils;
+const puppeteer = require('puppeteer-extra');
 
-/**
- * Attempts to extract email and social media links from a given website URL.
- * This is a basic placeholder implementation. A robust solution would involve
- * more sophisticated HTML parsing, potentially crawling multiple pages (Contact, About),
- * and handling various website structures.
- *
- * @param {string} websiteUrl The URL of the website to scrape.
- * @param {Apify.ProxyConfiguration | null} proxyConfiguration Optional proxy configuration.
- * @returns {Promise<{email: string|null, socialProfiles: Record<string, string>}>}
- */
-async function extractContactDetails(websiteUrl, proxyConfiguration) {
-    log.debug(`Requesting website for contact details: ${websiteUrl}`);
-    let email = null;
-    const socialProfiles = {};
-
+// Funcție pentru extragerea datelor de contact de pe un website
+exports.extractContactDetails = async (websiteUrl, proxyConfiguration) => {
+    log.info(`Extracting contact details from: ${websiteUrl}`);
+    
+    const browser = await Apify.launchPuppeteer({
+        useChrome: true,
+        stealth: true,
+        proxyUrl: proxyConfiguration ? proxyConfiguration.newUrl() : undefined,
+        launchOptions: {
+            headless: true,
+        },
+    });
+    
+    const result = {
+        email: null,
+        socialProfiles: {},
+    };
+    
     try {
-        const { body: html } = await Apify.utils.requestAsBrowser({
-            url: websiteUrl,
-            proxyUrl: proxyConfiguration ? proxyConfiguration.newUrl() : undefined,
-            // Ignore SSL errors, as many small business sites might have issues
-            ignoreSslErrors: true,
-            // Set a timeout for the request
-            timeoutSecs: 20
+        const page = await browser.newPage();
+        
+        // Set timeout to avoid waiting too long
+        await page.setDefaultNavigationTimeout(30000);
+        
+        // Set user-agent
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
+        
+        // Navigate to website
+        await page.goto(websiteUrl, { waitUntil: 'domcontentloaded' });
+        
+        // Extract emails from the page using regex
+        const emails = await page.evaluate(() => {
+            const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+            const bodyText = document.body.innerText;
+            const matches = bodyText.match(emailRegex) || [];
+            
+            // Filter out common false positives
+            return [...new Set(matches)].filter(email => 
+                !email.includes('example.com') && 
+                !email.includes('domain.com') && 
+                !email.includes('@email')
+            );
         });
-
-        if (!html) {
-            log.warning(`No HTML content received from ${websiteUrl}`);
-            return { email, socialProfiles };
+        
+        if (emails.length > 0) {
+            result.email = emails[0]; // Use first found email
         }
-
-        // Basic email regex (can find false positives)
-        const emailMatches = html.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/gi);
-        if (emailMatches) {
-            // Find the first email that doesn't look like an image file or common exclusion
-            email = emailMatches.find(e => !/\.(png|jpg|jpeg|gif)$/i.test(e) && !e.includes('example.com') && !e.includes('domain.com') && !e.includes('wixpress.com')) || null;
-            if (email) log.debug(`Found potential email: ${email}`);
-        }
-
-        // Basic social media link regexes
-        const socialPatterns = {
-            facebook: /https?:\/\/(?:www\.)?facebook\.com\/[A-Za-z0-9_.-]+/gi,
-            instagram: /https?:\/\/(?:www\.)?instagram\.com\/[A-Za-z0-9_.-]+/gi,
-            twitter: /https?:\/\/(?:www\.)?twitter\.com\/[A-Za-z0-9_]+/gi,
-            linkedin: /https?:\/\/(?:www\.)?linkedin\.com\/(?:company|in)\/[A-Za-z0-9_.-]+/gi,
-            // Add more patterns as needed (YouTube, Pinterest, etc.)
-        };
-
-        for (const [platform, regex] of Object.entries(socialPatterns)) {
-            const matches = html.match(regex);
-            if (matches) {
-                // Find the first unique, valid-looking URL
-                const foundUrl = matches.find(url => url.length > `https://www.${platform}.com/`.length + 2); // Basic sanity check
-                if (foundUrl && !socialProfiles[platform]) {
-                     socialProfiles[platform] = foundUrl;
-                     log.debug(`Found potential ${platform} link: ${foundUrl}`);
+        
+        // Extract social media profiles
+        const socialProfiles = await page.evaluate(() => {
+            const profiles = {};
+            const links = Array.from(document.querySelectorAll('a[href]'));
+            
+            const socialPatterns = {
+                facebook: /facebook\.com/i,
+                twitter: /twitter\.com|x\.com/i,
+                linkedin: /linkedin\.com/i,
+                instagram: /instagram\.com/i,
+                youtube: /youtube\.com/i,
+                tiktok: /tiktok\.com/i,
+            };
+            
+            for (const link of links) {
+                const href = link.href;
+                
+                for (const [platform, pattern] of Object.entries(socialPatterns)) {
+                    if (pattern.test(href)) {
+                        profiles[platform] = href;
+                    }
                 }
-
+            }
+            
+            return profiles;
+        });
+        
+        result.socialProfiles = socialProfiles;
+        
+        // Try to find a contact page and extract more info
+        const contactPageLink = await page.evaluate(() => {
+            const links = Array.from(document.querySelectorAll('a[href]'));
+            const contactKeywords = ['contact', 'contacte', 'despre noi', 'about', 'contacta'];
+            
+            for (const link of links) {
+                const text = link.innerText.toLowerCase();
+                
+                for (const keyword of contactKeywords) {
+                    if (text.includes(keyword)) {
+                        return link.href;
+                    }
+                }
+            }
+            
+            return null;
+        });
+        
+        if (contactPageLink) {
+            log.info(`Found contact page: ${contactPageLink}`);
+            await page.goto(contactPageLink, { waitUntil: 'domcontentloaded' });
+            
+            // Extract more emails from contact page
+            const contactEmails = await page.evaluate(() => {
+                const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+                const bodyText = document.body.innerText;
+                return [...new Set(bodyText.match(emailRegex) || [])];
+            });
+            
+            if (contactEmails.length > 0 && !result.email) {
+                result.email = contactEmails[0];
             }
         }
-
+        
     } catch (error) {
-        // Log specific errors like timeouts, SSL issues, etc.
-        log.warning(`Error fetching or parsing website ${websiteUrl}: ${error.message}`);
-        // Don't throw, just return empty results
+        log.warning(`Error while scraping website: ${error.message}`);
+    } finally {
+        await browser.close();
     }
-
-    return { email, socialProfiles };
-}
-
-module.exports = { extractContactDetails };
+    
+    return result;
+};
