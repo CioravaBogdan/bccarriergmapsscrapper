@@ -99,11 +99,12 @@ Apify.main(async () => {
             const longitude = customGeolocation.coordinates[0];
             const latitude = customGeolocation.coordinates[1];
 
-            // Adaugă această verificare înainte de a crea URL-ul
+            log.info(`DEBUG: Extracted raw coordinates from input - longitude: ${longitude}, latitude: ${latitude}`);
 
-            if (latitude === undefined || longitude === undefined) {
-                log.error("Invalid coordinates in customGeolocation. Coordinates must be provided as [longitude, latitude] array.");
-                throw new Error("Invalid coordinates format");
+            // Verifică dacă sunt numere valide (nu doar undefined)
+            if (typeof latitude !== 'number' || typeof longitude !== 'number' || isNaN(latitude) || isNaN(longitude)) {
+                log.error(`Invalid coordinate values: latitude=${latitude}, longitude=${longitude}`);
+                throw new Error("Invalid coordinate values");
             }
 
             const zoom = 15 - Math.min(Math.floor((customGeolocation.radiusKm || 5) / 2), 10);
