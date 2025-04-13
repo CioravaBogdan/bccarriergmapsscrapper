@@ -568,55 +568,176 @@ Apify.main(async () => {
                     const basicDetails = await page.evaluate(() => {
                         const details = {};
                         
-                        // Nume
-                        const nameElement = document.querySelector('h1.fontHeadlineLarge');
-                        details.name = nameElement ? nameElement.textContent.trim() : null;
+                        // Selectori multipli pentru nume
+                        const nameSelectors = [
+                            'h1.fontHeadlineLarge',
+                            'h1[class*="fontHeadline"]',
+                            'div[role="main"] h1',
+                            'div.tTVLSc h1',
+                            'div[class*="title"] h1',
+                            'div.lMbq3e h1',
+                            'h1'
+                        ];
                         
-                        // Categoria
-                        const categoryElement = document.querySelector('button[jsaction*="pane.rating.category"]');
-                        details.category = categoryElement ? categoryElement.textContent.trim() : null;
+                        for (const selector of nameSelectors) {
+                            const element = document.querySelector(selector);
+                            if (element && element.textContent.trim()) {
+                                details.name = element.textContent.trim();
+                                break;
+                            }
+                        }
+                        
+                        // Backup pentru nume - folosim numele din titlul paginii
+                        if (!details.name) {
+                            const title = document.title;
+                            if (title) {
+                                const titleParts = title.split(' - ');
+                                if (titleParts.length > 0) {
+                                    details.name = titleParts[0].trim();
+                                }
+                            }
+                        }
+                        
+                        // Selectori multipli pentru categorie
+                        const categorySelectors = [
+                            'button[jsaction*="pane.rating.category"]',
+                            'button[jsaction*="category"]',
+                            'span[jstcache="645"]',
+                            'span.DkEaL',
+                            'div.R4H8Rd',
+                            'div[jsaction*="category"]'
+                        ];
+                        
+                        for (const selector of categorySelectors) {
+                            const element = document.querySelector(selector);
+                            if (element && element.textContent.trim()) {
+                                details.category = element.textContent.trim();
+                                break;
+                            }
+                        }
                         
                         // Adresa
-                        const addressElement = document.querySelector('button[data-item-id*="address"]');
-                        details.address = addressElement ? addressElement.textContent.trim() : null;
+                        const addressSelectors = [
+                            'button[data-item-id*="address"]',
+                            'button[aria-label*="Address"]',
+                            'button[aria-label*="address"]'
+                        ];
+                        for (const selector of addressSelectors) {
+                            const element = document.querySelector(selector);
+                            if (element && element.textContent.trim()) {
+                                details.address = element.textContent.trim();
+                                break;
+                            }
+                        }
                         
                         // Telefon
-                        const phoneElement = document.querySelector('button[data-item-id*="phone"]');
-                        details.phone = phoneElement ? phoneElement.textContent.trim() : null;
+                        const phoneSelectors = [
+                            'button[data-item-id*="phone"]',
+                            'button[aria-label*="Phone"]',
+                            'button[aria-label*="phone"]',
+                            '[data-tooltip="Copy phone number"]'
+                        ];
+                        for (const selector of phoneSelectors) {
+                            const element = document.querySelector(selector);
+                            if (element && element.textContent.trim()) {
+                                details.phone = element.textContent.trim();
+                                break;
+                            }
+                        }
                         
                         // Website
-                        const websiteElement = document.querySelector('a[data-item-id*="authority"]');
-                        details.website = websiteElement && websiteElement.href ? websiteElement.href : null;
+                        const websiteSelectors = [
+                            'a[data-item-id*="authority"]',
+                            'a[aria-label*="website"]',
+                            'a[href*="http"]:not([href*="google"])'
+                        ];
+                        for (const selector of websiteSelectors) {
+                            const element = document.querySelector(selector);
+                            if (element && element.href) {
+                                details.website = element.href;
+                                break;
+                            }
+                        }
                         
                         return details;
                     });
-                    
-                    // Actualizează obiectul placeData cu datele de bază
+
+                    // Adaugă debugging pentru a verifica ce s-a extras
+                    log.info(`Extracted basic details: name=${basicDetails.name}, category=${basicDetails.category}`);
+
+                    // Adaugă obiectul basicDetails la placeData
                     Object.assign(placeData, basicDetails);
                     
-                    // Extrage programul de funcționare
+                    // Extrage programul de funcționare cu metode multiple
                     const openingHours = await page.evaluate(() => {
                         try {
-                            // Caută după butoanele din secțiunea de orar
-                            const hoursButtons = Array.from(document.querySelectorAll('button[data-item-id*="oh"]'));
-                            if (hoursButtons.length > 0) {
-                                // Dacă găsim buton de orar, verificăm starea curentă
-                                const statusText = hoursButtons[0].textContent.trim();
+                            // Mai întâi, încearcă să găsim butonul de orar și să-l apăsăm
+                            const hourSelectors = [
+                                'button[data-item-id*="oh"]', 
+                                'button[aria-label*="hour"]',
+                                'button[aria-label*="Hours"]',
+                                'div[data-info-status]',
+                                'button[jsaction*="hours"]'
+                            ];
+                            
+                            let hoursButton = null;
+                            for (const selector of hourSelectors) {
+                                const button = document.querySelector(selector);
+                                if (button) {
+                                    hoursButton = button;
+                                    break;
+                                }
+                            }
+                            
+                            // Dacă găsim buton de orar, extragem status-ul inițial
+                            if (hoursButton) {
+                                const statusText = hoursButton.textContent.trim();
                                 
-                                // Încercăm să găsim orarul complet
+                                // Încercăm să facem click pentru a deschide panoul complet cu ore (dacă nu e deja deschis)
+                                try {
+                                    hoursButton.click();
+                                    // Așteaptă să se încarce panoul
+                                    setTimeout(() => {}, 1000);
+                                } catch (clickErr) {
+                                    console.error('Could not click hours button', clickErr);
+                                }
+                                
+                                // După click, căutăm tabelul cu program
+                                const scheduleSelectors = [
+                                    'table[class*="eK4R0e"] tr',
+                                    'table tr',
+                                    'div[role="dialog"] tr',
+                                    'div[aria-label*="hour"] tr',
+                                    'div[jsaction*="pane.openhours"] tr'
+                                ];
+                                
+                                let scheduleElements = [];
+                                for (const selector of scheduleSelectors) {
+                                    const elements = document.querySelectorAll(selector);
+                                    if (elements && elements.length > 0) {
+                                        scheduleElements = Array.from(elements);
+                                        break;
+                                    }
+                                }
+                                
                                 let fullSchedule = null;
-                                
-                                // Găsim toate elementele ce conțin zile și ore
-                                const scheduleItems = Array.from(document.querySelectorAll('table[class*="eK4R0e"] tr'));
-                                if (scheduleItems.length > 0) {
-                                    fullSchedule = scheduleItems.map(item => {
-                                        const dayEl = item.querySelector('td:first-child');
-                                        const hoursEl = item.querySelector('td:nth-child(2)');
-                                        if (dayEl && hoursEl) {
+                                if (scheduleElements.length > 0) {
+                                    fullSchedule = scheduleElements.map(row => {
+                                        const cells = row.querySelectorAll('td');
+                                        if (cells.length >= 2) {
                                             return {
-                                                day: dayEl.textContent.trim(),
-                                                hours: hoursEl.textContent.trim()
+                                                day: cells[0].textContent.trim(),
+                                                hours: cells[1].textContent.trim()
                                             };
+                                        } else {
+                                            const text = row.textContent.trim();
+                                            const dayMatch = text.match(/([A-Za-z]+):\s*(.*)/);
+                                            if (dayMatch) {
+                                                return {
+                                                    day: dayMatch[1],
+                                                    hours: dayMatch[2]
+                                                };
+                                            }
                                         }
                                         return null;
                                     }).filter(Boolean);
@@ -627,16 +748,32 @@ Apify.main(async () => {
                                     fullSchedule
                                 };
                             }
+                            
+                            // Dacă nu găsim buton specific, căutăm orice text care ar putea indica programul
+                            const statusElements = document.querySelectorAll('[aria-label*="Open"], [aria-label*="Closed"], [data-info-status]');
+                            for (const el of statusElements) {
+                                const text = el.textContent.trim();
+                                if (text && (text.includes('Open') || text.includes('Closed'))) {
+                                    return {
+                                        status: text,
+                                        fullSchedule: null
+                                    };
+                                }
+                            }
+                            
                             return null;
                         } catch (e) {
                             console.error('Error extracting opening hours:', e);
                             return null;
                         }
                     });
-                    
+
                     if (openingHours) {
                         placeData.openingHoursStatus = openingHours.status;
                         placeData.openingHours = openingHours.fullSchedule;
+                        log.info(`Extracted opening hours: status=${openingHours.status}, schedule=${openingHours.fullSchedule ? 'yes' : 'no'}`);
+                    } else {
+                        log.info(`No opening hours found for this place`);
                     }
                     
                     // Extrage Plus Code
@@ -653,44 +790,111 @@ Apify.main(async () => {
                     
                     placeData.plusCode = plusCode;
                     
-                    // Extrage imagini
+                    // Extrage imagini cu metode multiple
                     if (input.maxImages > 0) {
                         try {
-                            // Click pe prima imagine pentru a deschide galeria
-                            const firstImgSelector = 'button[data-item-id*="image"]';
-                            const hasImages = await page.$(firstImgSelector);
-                            
-                            if (hasImages) {
-                                // Click pe imagine pentru a deschide galeria
-                                await Promise.all([
-                                    page.click(firstImgSelector),
-                                    page.waitForSelector('div[data-photo-index]', { timeout: 5000 })
-                                ]).catch(() => log.warning('Could not open the image gallery'));
+                            // Încercare 1: Direct din DOM, fără a deschide galeria
+                            let extractedImageUrls = await page.evaluate((maxImg) => {
+                                const imgUrls = [];
                                 
-                                // Extrage URL-uri de imagini din galerie
-                                const extractedImageUrls = await page.evaluate((maxImg) => {
-                                    const imgUrls = [];
-                                    const imgElements = document.querySelectorAll('img[src*="googleusercontent"]');
-                                    
-                                    imgElements.forEach(img => {
-                                        if (imgUrls.length < maxImg && img.src) {
-                                            // Optimizare: Înlocuiește cu URL-ul la rezoluție mai mare
-                                            const highResUrl = img.src.replace(/=w\d+-h\d+/, '=w1200-h1200');
+                                // Găsește toate imaginile din pagină
+                                const imgElements = document.querySelectorAll('img[src*="googleusercontent"], img[data-src*="googleusercontent"]');
+                                
+                                imgElements.forEach(img => {
+                                    const src = img.src || img.getAttribute('data-src');
+                                    if (imgUrls.length < maxImg && src) {
+                                        // Optimizare: Înlocuiește cu URL-ul la rezoluție mai mare
+                                        const highResUrl = src.replace(/=w\d+-h\d+/, '=w1200-h1200');
+                                        if (!imgUrls.includes(highResUrl) && highResUrl.includes('googleusercontent')) {
                                             imgUrls.push(highResUrl);
                                         }
-                                    });
-                                    
-                                    return imgUrls;
-                                }, input.maxImages || 5);
+                                    }
+                                });
                                 
+                                return imgUrls;
+                            }, input.maxImages || 5);
+                            
+                            // Dacă nu am găsit imagini direct, încercăm să deschidem galeria
+                            if (extractedImageUrls.length === 0) {
+                                log.info('Trying to open image gallery to extract photos...');
+                                
+                                // Lista de selectori pentru butoane de galerie
+                                const galleryButtonSelectors = [
+                                    'button[data-item-id*="image"]',
+                                    'button[jsaction*="photo"]',
+                                    'button[jsaction*="image"]',
+                                    'button[aria-label*="photo"]',
+                                    'a[href*="photo"]',
+                                    'img.Cur7sb'
+                                ];
+                                
+                                // Încearcă fiecare selector
+                                let galleryOpened = false;
+                                for (const selector of galleryButtonSelectors) {
+                                    const hasButton = await page.$(selector);
+                                    if (hasButton) {
+                                        try {
+                                            await Promise.all([
+                                                page.click(selector),
+                                                page.waitForSelector('div[data-photo-index], img[src*="googleusercontent"][srcset]', { timeout: 5000 })
+                                            ]);
+                                            galleryOpened = true;
+                                            log.info(`Gallery opened using selector: ${selector}`);
+                                            break;
+                                        } catch (err) {
+                                            log.debug(`Failed to open gallery with ${selector}: ${err.message}`);
+                                        }
+                                    }
+                                }
+                                
+                                // Dacă am reușit să deschidem galeria, extragem link-urile
+                                if (galleryOpened) {
+                                    // Așteaptă ca imaginile să se încarce
+                                    await page.waitForTimeout(2000);
+                                    
+                                    // Extrage URL-uri de imagini din galerie
+                                    extractedImageUrls = await page.evaluate((maxImg) => {
+                                        const imgUrls = [];
+                                        
+                                        // Găsește toate imaginile din galerie - încercăm multiple selectoare
+                                        const imgSelectors = [
+                                            'img[src*="googleusercontent"][srcset]',
+                                            'div[data-photo-index] img',
+                                            'img[width="1000"]',
+                                            'img[style*="translateZ"]'
+                                        ];
+                                        
+                                        let imgElements = [];
+                                        for (const selector of imgSelectors) {
+                                            const elements = document.querySelectorAll(selector);
+                                            if (elements && elements.length > 0) {
+                                                imgElements = Array.from(elements);
+                                                break;
+                                            }
+                                        }
+                                        
+                                        imgElements.forEach(img => {
+                                            if (imgUrls.length < maxImg && img.src) {
+                                                // Optimizare: Înlocuiește cu URL-ul la rezoluție mai mare
+                                                const highResUrl = img.src.replace(/=w\d+-h\d+/, '=w1200-h1200');
+                                                if (!imgUrls.includes(highResUrl) && highResUrl.includes('googleusercontent')) {
+                                                    imgUrls.push(highResUrl);
+                                                }
+                                            }
+                                        });
+                                        
+                                        return imgUrls;
+                                    }, input.maxImages || 5);
+                                    
+                                    // Închide galeria apăsând Escape
+                                    await page.keyboard.press('Escape');
+                                    await page.waitForTimeout(1000);
+                                }
+                            }
+                            
+                            if (extractedImageUrls.length > 0) {
                                 placeData.imageUrls = extractedImageUrls;
                                 log.info(`Extracted ${placeData.imageUrls.length} image URLs`);
-                                
-                                // Închide galeria
-                                await Promise.all([
-                                    page.click('button[aria-label="Back"]'),
-                                    page.waitForSelector(firstImgSelector, { timeout: 5000 })
-                                ]).catch(() => log.warning('Could not close the image gallery'));
                             } else {
                                 log.info('No images found for this place');
                             }
@@ -749,11 +953,189 @@ Apify.main(async () => {
                         }
                     }
                     
-                    // Extrage recenzii
+                    // Extragere recenzii
                     if (input.maxReviews > 0) {
                         try {
-                            // TODO: Adaugă cod pentru extragerea recenziilor
-                            // ...
+                            // Găsim și apăsăm butonul de recenzii
+                            const reviewButtonSelectors = [
+                                'button[jsaction*="pane.rating.moreReviews"]',
+                                'button[jsaction*="reviews"]',
+                                'button[aria-label*="reviews"]',
+                                'button[aria-label*="review"]',
+                                'a[href*="#reviews"]'
+                            ];
+                            
+                            let reviewsOpened = false;
+                            for (const selector of reviewButtonSelectors) {
+                                const hasButton = await page.$(selector);
+                                if (hasButton) {
+                                    try {
+                                        await Promise.all([
+                                            page.click(selector),
+                                            page.waitForSelector('.gw-review, [data-review-id], div[data-rating]', { timeout: 5000 })
+                                        ]);
+                                        reviewsOpened = true;
+                                        log.info(`Reviews section opened using selector: ${selector}`);
+                                        break;
+                                    } catch (err) {
+                                        log.debug(`Failed to open reviews with ${selector}: ${err.message}`);
+                                    }
+                                }
+                            }
+                            
+                            if (reviewsOpened) {
+                                // Sortare recenzii dacă e necesar
+                                if (input.reviewsSort && input.reviewsSort !== 'relevance') {
+                                    const sortButtonSelectors = [
+                                        'button[aria-label*="Sort"]',
+                                        'button[data-value="Sort"]',
+                                        'button[jsaction*="sort"]'
+                                    ];
+                                    
+                                    for (const selector of sortButtonSelectors) {
+                                        const sortButton = await page.$(selector);
+                                        if (sortButton) {
+                                            await sortButton.click();
+                                            await page.waitForTimeout(1000);
+                                            
+                                            // Selectează opțiunea de sortare
+                                            const sortOptionSelectors = {
+                                                'newest': 'li[aria-label*="newest"], span[aria-label*="newest"]',
+                                                'highest': 'li[aria-label*="highest"], span[aria-label*="highest"]',
+                                                'lowest': 'li[aria-label*="lowest"], span[aria-label*="lowest"]'
+                                            };
+                                            
+                                            const targetSelector = sortOptionSelectors[input.reviewsSort] || sortOptionSelectors['newest'];
+                                            const sortOption = await page.$(targetSelector);
+                                            
+                                            if (sortOption) {
+                                                await sortOption.click();
+                                                await page.waitForTimeout(2000);
+                                                log.info(`Reviews sorted by: ${input.reviewsSort}`);
+                                            }
+                                            break;
+                                        }
+                                    }
+                                }
+                                
+                                // Scroll pentru a încărca mai multe recenzii
+                                await page.evaluate(async (maxReviews) => {
+                                    const reviewsContainer = document.querySelector('div[role="feed"], div[jsaction*="scroll"]');
+                                    if (reviewsContainer) {
+                                        const waitTime = 1000;
+                                        let lastHeight = reviewsContainer.scrollHeight;
+                                        let reviewCount = document.querySelectorAll('.gw-review, [data-review-id], div[data-rating]').length;
+                                        
+                                        // Scroll până ajungem la numărul dorit de recenzii sau nu mai avem progres
+                                        while (reviewCount < maxReviews) {
+                                            reviewsContainer.scrollTo(0, reviewsContainer.scrollHeight);
+                                            await new Promise(resolve => setTimeout(resolve, waitTime));
+                                            
+                                            if (reviewsContainer.scrollHeight > lastHeight) {
+                                                lastHeight = reviewsContainer.scrollHeight;
+                                                reviewCount = document.querySelectorAll('.gw-review, [data-review-id], div[data-rating]').length;
+                                            } else {
+                                                // Am ajuns la capăt, nu mai avem progres
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }, input.maxReviews);
+                                
+                                // Extrage detaliile recenziilor
+                                const reviews = await page.evaluate((maxReviews) => {
+                                    const reviewList = [];
+                                    
+                                    // Încercăm multiple selectoare pentru a găsi containerele de recenzii
+                                    const reviewSelectors = [
+                                        '.gw-review',
+                                        '[data-review-id]',
+                                        'div[data-rating]'
+                                    ];
+                                    
+                                    let reviewElements = [];
+                                    for (const selector of reviewSelectors) {
+                                        const elements = document.querySelectorAll(selector);
+                                        if (elements && elements.length > 0) {
+                                            reviewElements = Array.from(elements).slice(0, maxReviews);
+                                            break;
+                                        }
+                                    }
+                                    
+                                    for (const reviewEl of reviewElements) {
+                                        try {
+                                            // Extrage numele autorului
+                                            let authorName = null;
+                                            const authorEl = reviewEl.querySelector('.d4r55, [role="link"], [jsan*="name"]');
+                                            if (authorEl) {
+                                                authorName = authorEl.textContent.trim();
+                                            }
+                                            
+                                            // Extrage ratingul
+                                            let rating = null;
+                                            // Încercăm să găsim stele
+                                            const ratingEl = reviewEl.querySelector('[aria-label*="stars"], [aria-label*="star"]');
+                                            if (ratingEl) {
+                                                const ratingText = ratingEl.getAttribute('aria-label');
+                                                const ratingMatch = ratingText.match(/(\d+(\.\d+)?)/);
+                                                if (ratingMatch) {
+                                                    rating = parseFloat(ratingMatch[1]);
+                                                }
+                                            }
+                                            
+                                            // Alternativ, căutăm după data-rating
+                                            if (rating === null) {
+                                                const dataRating = reviewEl.getAttribute('data-rating');
+                                                if (dataRating) {
+                                                    rating = parseFloat(dataRating);
+                                                }
+                                            }
+                                            
+                                            // Extrage data
+                                            let date = null;
+                                            const dateEl = reviewEl.querySelector('.rsqaWe, time, [jsan*="date"]');
+                                            if (dateEl) {
+                                                date = dateEl.textContent.trim();
+                                            }
+                                            
+                                            // Extrage textul
+                                            let text = null;
+                                            const textEl = reviewEl.querySelector('.wiI7pd, [data-review-text], [jsan*="text"]');
+                                            if (textEl) {
+                                                text = textEl.textContent.trim();
+                                            }
+                                            
+                                            // Adaugă recenzia la listă dacă avem cel puțin unele date
+                                            if (authorName || rating || date || text) {
+                                                reviewList.push({
+                                                    authorName: authorName || 'Anonymous',
+                                                    rating: rating || 0,
+                                                    date: date || 'Unknown date',
+                                                    text: text || 'No text'
+                                                });
+                                            }
+                                        } catch (reviewErr) {
+                                            console.error('Error parsing review:', reviewErr);
+                                        }
+                                    }
+                                    
+                                    return reviewList;
+                                    
+                                }, input.maxReviews);
+                                
+                                if (reviews.length > 0) {
+                                    placeData.reviews = reviews;
+                                    log.info(`Extracted ${reviews.length} reviews`);
+                                } else {
+                                    log.info('No reviews found for this place');
+                                }
+                                
+                                // Închide panoul de recenzii
+                                await page.keyboard.press('Escape');
+                                await page.waitForTimeout(1000);
+                            } else {
+                                log.info('Could not open reviews section');
+                            }
                         } catch (e) {
                             log.warning(`Error extracting reviews: ${e.message}`);
                         }
