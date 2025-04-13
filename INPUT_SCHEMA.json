@@ -1,159 +1,87 @@
 {
-  "title": "Google Maps Advanced Scraper",
+  "title": "Google Maps Advanced Scraper Input",
   "description": "Extract data from Google Maps for businesses, places and locations",
   "type": "object",
   "schemaVersion": 1,
   "properties": {
-    "searchTab": {
-      "title": "Search Settings",
+    "searchStringsArray": {
+      "title": "Search terms",
+      "type": "array",
+      "description": "List of search terms to use (will run multiple searches)",
+      "editor": "stringList",
+      "default": []
+    },
+    "searchLocation": {
+      "title": "Location name",
+      "type": "string",
+      "description": "Location to search in (e.g. 'New York', 'Paris', 'Tokyo')",
+      "editor": "textfield"
+    },
+    "customGeolocation": {
+      "title": "Custom geolocation",
       "type": "object",
-      "description": "Configure how to find places on Google Maps",
-      "editor": "objectEditor",
-      "prefill": {
-        "searchStringsArray": ["fabrica", "producator", "exportator"],
-        "searchLocation": "Romania"
-      },
-      "properties": {
-        "searchStringsArray": {
-          "title": "Search terms",
-          "type": "array",
-          "description": "List of search terms to use (will run multiple searches)",
-          "editor": "stringList",
-          "default": []
-        },
-        "searchLocation": {
-          "title": "Location name",
-          "type": "string",
-          "description": "Location to search in (e.g. 'New York', 'Paris', 'Tokyo')",
-          "editor": "textfield"
-        },
-        "customGeolocation": {
-          "title": "Custom geolocation",
-          "type": "object",
-          "description": "Define a specific area to search in using coordinates",
-          "editor": "json",
-          "default": {
-            "type": "Point",
-            "coordinates": [26.9141349, 46.528744],
-            "radiusKm": 5
-          }
-        },
-        "startUrls": {
-          "title": "Start URLs",
-          "type": "array",
-          "description": "Direct URLs to Google Maps places (skips search)",
-          "editor": "requestListSources",
-          "default": []
-        }
+      "description": "Define a specific area to search in using coordinates",
+      "editor": "json",
+      "default": {
+        "type": "Point",
+        "coordinates": [26.9141349, 46.528744],
+        "radiusKm": 5
       }
     },
-    "limitTab": {
-      "title": "Limits",
-      "type": "object",
-      "description": "Control how many results to collect",
-      "editor": "objectEditor",
-      "properties": {
-        "maxCrawledPlacesPerSearch": {
-          "title": "Maximum places per search term",
-          "type": "integer",
-          "description": "Maximum number of places to extract per search keyword (0 = unlimited)",
-          "editor": "number",
-          "default": 50
-        },
-        "maxCrawledPlaces": {
-          "title": "Maximum places total",
-          "type": "integer",
-          "description": "Total maximum number of places to extract across all searches (0 = unlimited)",
-          "editor": "number",
-          "default": 200
-        },
-        "maxCostPerRun": {
-          "title": "Maximum cost per run ($)",
-          "type": "number",
-          "description": "Estimated maximum cost for this run (0 = unlimited)",
-          "editor": "number",
-          "default": 0
-        }
-      }
+    "startUrls": {
+      "title": "Start URLs",
+      "type": "array",
+      "description": "Direct URLs to Google Maps places (skips search)",
+      "editor": "requestListSources",
+      "default": []
     },
-    "detailsTab": {
-      "title": "Data to Extract",
-      "type": "object",
-      "description": "Configure what data to extract from each place",
-      "editor": "objectEditor",
-      "properties": {
-        "scrapeContacts": {
-          "title": "Extract contact information",
-          "type": "boolean",
-          "description": "Get phone, website, email from places",
-          "editor": "checkbox",
-          "default": true
-        },
-        "scrapePlaceDetailPage": {
-          "title": "Extract full place details",
-          "type": "boolean",
-          "description": "Get complete information about each place",
-          "editor": "checkbox",
-          "default": true
-        },
-        "skipClosedPlaces": {
-          "title": "Skip permanently closed places",
-          "type": "boolean",
-          "description": "Don't extract data from closed businesses",
-          "editor": "checkbox",
-          "default": false
-        },
-        "maxImages": {
-          "title": "Maximum images per place",
-          "type": "integer",
-          "description": "Number of images to download per place (0 = none)",
-          "editor": "number",
-          "default": 0
-        },
-        "maxReviews": {
-          "title": "Maximum reviews per place",
-          "type": "integer",
-          "description": "Number of reviews to extract per place (0 = none)",
-          "editor": "number",
-          "default": 0
-        },
-        "reviewsSort": {
-          "title": "Reviews sort order",
-          "type": "string",
-          "description": "How to sort the reviews",
-          "editor": "select",
-          "default": "newest",
-          "enum": ["newest", "highest", "lowest"],
-          "enumTitles": ["Most recent first", "Highest rating first", "Lowest rating first"]
-        }
-      }
+    "maxCrawledPlacesPerSearch": {
+      "title": "Maximum places per search term",
+      "type": "integer",
+      "description": "Maximum number of places to extract per search keyword (0 = unlimited)",
+      "editor": "number",
+      "default": 50
     },
-    "advancedTab": {
-      "title": "Advanced Settings",
+    "maxCrawledPlaces": {
+      "title": "Maximum places total",
+      "type": "integer",
+      "description": "Total maximum number of places to extract across all searches (0 = unlimited)",
+      "editor": "number",
+      "default": 200
+    },
+    "scrapeContacts": {
+      "title": "Extract contact information",
+      "type": "boolean",
+      "description": "Get phone, website, email from places",
+      "editor": "checkbox",
+      "default": true
+    },
+    "maxReviews": {
+      "title": "Maximum reviews per place",
+      "type": "integer",
+      "description": "Number of reviews to extract per place (0 = none)",
+      "editor": "number",
+      "default": 0
+    },
+    "language": {
+      "title": "Language",
+      "type": "string",
+      "description": "Language code for Google Maps interface",
+      "editor": "select",
+      "default": "en",
+      "enum": ["en", "ro", "fr", "de", "es", "it"],
+      "enumTitles": ["English", "Romanian", "French", "German", "Spanish", "Italian"]
+    },
+    "proxyConfig": {
+      "title": "Proxy Configuration",
       "type": "object",
-      "description": "Configuration for advanced users",
-      "editor": "objectEditor",
-      "properties": {
-        "language": {
-          "title": "Language",
-          "type": "string",
-          "description": "Language code for Google Maps interface (en, ro, fr, etc.)",
-          "editor": "select",
-          "default": "en",
-          "enum": ["en", "ro", "fr", "de", "es", "it"],
-          "enumTitles": ["English", "Romanian", "French", "German", "Spanish", "Italian"]
-        },
-        "proxyConfig": {
-          "title": "Proxy Configuration",
-          "type": "object",
-          "description": "Settings for Apify proxy",
-          "editor": "json",
-          "default": {
-            "useApifyProxy": true,
-            "apifyProxyGroups": ["RESIDENTIAL"]
-          }
-        }
+      "description": "Settings for Apify proxy",
+      "editor": "json",
+      "default": {
+        "useApifyProxy": true,
+        "apifyProxyGroups": ["RESIDENTIAL"]
       }
     }
-  }
+  },
+  "required": []
 }

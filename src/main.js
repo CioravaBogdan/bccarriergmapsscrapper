@@ -15,25 +15,32 @@ Apify.main(async () => {
     // 1. Citirea input-ului și definirea parametrilor cu valori implicite
     log.info('Reading input...');
     const input = await Apify.getInput();
-    const {
-        startUrls = [],            // Listă de URL-uri Google Maps de pornire (opțional, poate conține căutări sau locuri individuale)
-        search,                    // Termenul de căutare (cuvinte cheie pentru afaceri)
-        searchLocation,            // Locația (oraș, zonă) unde să caute
-        language = 'ro',           // Limba interfeței Google Maps (afectează anumite date, ex: "Deschis acum")
-        maxItems = 0,              // Număr maxim de companii de extras (0 înseamnă nelimitat)
-        includeReviews = false,    // Dacă să extragă și recenziile pentru fiecare locație
-        maxReviews = 0,            // Număr maxim de recenzii per locație (0 = toate)
-        includeReviewerInfo = false, // Dacă extrage detalii despre recenzenți (nume, profil) – atenție la GDPR (Not implemented in this example)
-        maxCostPerRun = 0,         // Cost maxim per rulare (USD) – 0 înseamnă fără limită specifică (Control logic implemented)
-        proxyConfig = input.proxyConfig || {
-            useApifyProxy: true,
-            apifyProxyGroups: ['RESIDENTIAL'], // Request residential IPs specifically
-            countryCode: 'US'  // Optionally set country code for geo-targeted results
-        }
-    } = input;
+
+    // Extrage setările din noul format flat
+    const searchStringsArray = input.searchStringsArray || [];
+    const searchLocation = input.searchLocation || '';
+    const customGeolocation = input.customGeolocation || null;
+    const startUrls = input.startUrls || [];
+
+    const maxCrawledPlacesPerSearch = input.maxCrawledPlacesPerSearch || 0;
+    const maxCrawledPlaces = input.maxCrawledPlaces || 0; 
+    const maxCostPerRun = input.maxCostPerRun || 0;
+
+    const scrapeContacts = input.scrapeContacts !== false;
+    const scrapePlaceDetailPage = input.scrapePlaceDetailPage !== false;
+    const skipClosedPlaces = input.skipClosedPlaces || false;
+    const maxImages = input.maxImages || 0;
+    const maxReviews = input.maxReviews || 0;
+    const reviewsSort = input.reviewsSort || 'newest';
+
+    const language = input.language || 'en';
+    const proxyConfig = input.proxyConfig || {
+        useApifyProxy: true,
+        apifyProxyGroups: ['RESIDENTIAL']
+    };
 
     // Validare input minim necesar
-    if (!startUrls.length && (!search || !searchLocation)) {
+    if (!startUrls.length && (!searchStringsArray.length || !searchLocation)) {
         throw new Error('Input error: You must provide either "startUrls" or both "search" and "searchLocation".');
     }
 
@@ -65,7 +72,7 @@ Apify.main(async () => {
     }
 
     // Al doilea pas: dacă avem termeni de căutare și startUrls, adaugă și căutarea
-    if (search && startUrls.length > 0) {
+    if (searchStringsArray.length > 0 && startUrls.length > 0) {
         // Vom folosi coordonatele primei locații pentru căutare
         // Acest cod este executat după ce se termină procesarea startUrls
         log.info('Adding search tasks to be processed after initial URLs');
@@ -75,27 +82,28 @@ Apify.main(async () => {
             url: startUrls[0].url || startUrls[0], 
             userData: { 
                 label: 'EXTRACT_AND_SEARCH',
-                search: search,
-                searchRadius: searchRadius || 5
+                search: searchStringsArray.join(', '),
+                searchRadius: 5
             }
         });
         initialRequestCount++;
     } 
     // Cazul standard când avem doar căutare fără startUrls (neschimbat)
-    else if (search && startUrls.length === 0) {
+    else if (searchStringsArray.length > 0 && startUrls.length === 0) {
         log.info('Generating search URL from keywords and location...');
-        const searchTermEncoded = encodeURIComponent(search);
+        const searchTermEncoded = encodeURIComponent(searchStringsArray.join(' '));
         
         // Verifică dacă avem coordonate specifice
-        if (input.latitude && input.longitude) {
-            const searchUrl = `https://www.google.com/maps/search/${searchTermEncoded}/@${input.latitude},${input.longitude},14z`;
+        if (customGeolocation) {
+            const { latitude, longitude } = customGeolocation;
+            const searchUrl = `https://www.google.com/maps/search/${searchTermEncoded}/@${latitude},${longitude},14z`;
             log.info(`Adding search URL with coordinates: ${searchUrl}`);
             await requestQueue.addRequest({ 
                 url: searchUrl, 
                 userData: { 
                     label: 'SEARCH', 
-                    search, 
-                    coordinates: { lat: input.latitude, lng: input.longitude } 
+                    search: searchStringsArray.join(', '), 
+                    coordinates: { lat: latitude, lng: longitude } 
                 } 
             });
         } 
@@ -107,7 +115,7 @@ Apify.main(async () => {
             log.info(`Adding search URL with location: ${searchUrl}`);
             await requestQueue.addRequest({ 
                 url: searchUrl, 
-                userData: { label: 'SEARCH', search, searchLocation } 
+                userData: { label: 'SEARCH', search: searchStringsArray.join(', '), searchLocation } 
             });
         }
         // Doar căutare după cuvinte cheie
@@ -116,7 +124,7 @@ Apify.main(async () => {
             log.info(`Adding search URL with only keywords: ${searchUrl}`);
             await requestQueue.addRequest({ 
                 url: searchUrl, 
-                userData: { label: 'SEARCH', search } 
+                userData: { label: 'SEARCH', search: searchStringsArray.join(', ') } 
             });
         }
         initialRequestCount++;
@@ -292,8 +300,8 @@ Apify.main(async () => {
                     let enqueuedCount = 0;
                     for (const place of places) {
                         // Check maxItems limit before enqueueing
-                        if (maxItems > 0 && scrapedItemsCount + enqueuedCount >= maxItems) {
-                            log.info(`maxItems limit (${maxItems}) reached. Stopping enqueueing.`);
+                        if (maxCrawledPlaces > 0 && scrapedItemsCount + enqueuedCount >= maxCrawledPlaces) {
+                            log.info(`maxItems limit (${maxCrawledPlaces}) reached. Stopping enqueueing.`);
                             break;
                         }
                          // Check maxCost limit (simplified check)
@@ -381,8 +389,8 @@ Apify.main(async () => {
                 }
             } else if (label === 'DETAIL') {
                 // Check maxItems limit before processing
-                if (maxItems > 0 && scrapedItemsCount >= maxItems) {
-                    log.info(`maxItems limit (${maxItems}) reached. Skipping detail processing for ${request.url}`);
+                if (maxCrawledPlaces > 0 && scrapedItemsCount >= maxCrawledPlaces) {
+                    log.info(`maxItems limit (${maxCrawledPlaces}) reached. Skipping detail processing for ${request.url}`);
                     return; // Stop processing further details
                 }
                  // Check maxCost limit before processing
@@ -529,7 +537,7 @@ Apify.main(async () => {
 
                 // 7. Extract Reviews if requested
                 placeData.reviews = [];
-                if (includeReviews && placeData.reviewCount > 0) {
+                if (maxReviews > 0) {
                     log.info(`Attempting to extract reviews for ${placeName}...`);
                     const reviewsButtonSelector = 'button[jsaction*="pane.reviewChart.moreReviews"], button[aria-label*="Reviews for"]'; // Try multiple selectors
                     try {
