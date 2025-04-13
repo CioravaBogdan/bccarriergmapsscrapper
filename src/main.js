@@ -862,7 +862,7 @@ Apify.main(async () => {
                                             log.info(`Clicking gallery button with selector: ${selector}`);
                                             await page.click(selector);
                                             
-                                            // Așteaptă ca galeria să se deschidă
+                                            // Așteaptă să se deschidă
                                             await page.waitForSelector([
                                                 'div[data-photo-index]',
                                                 'img[src*="googleusercontent"][srcset]',
@@ -1001,182 +1001,261 @@ Apify.main(async () => {
                             // Găsim și apăsăm butonul de recenzii
                             const reviewButtonSelectors = [
                                 'button[jsaction*="pane.rating.moreReviews"]',
+                                'button[jsaction*="reviewChart"]',
                                 'button[jsaction*="reviews"]',
                                 'button[aria-label*="reviews"]',
                                 'button[aria-label*="review"]',
-                                'a[href*="#reviews"]'
+                                'a[href*="#reviews"]',
+                                'div[role="button"][jsaction*="review"]',
+                                'div.F7nice',
+                                'span[aria-label*="star"]'
                             ];
                             
+                            // Debug - verificăm care selectori există în pagină
+                            for (const selector of reviewButtonSelectors) {
+                                const hasButton = await page.$(selector);
+                                if (hasButton) {
+                                    log.info(`Found reviews button with selector: ${selector}`);
+                                }
+                            }
+                            
+                            // Încercăm să deschidem secțiunea de recenzii
                             let reviewsOpened = false;
+                            
                             for (const selector of reviewButtonSelectors) {
                                 const hasButton = await page.$(selector);
                                 if (hasButton) {
                                     try {
-                                        await Promise.all([
-                                            page.click(selector),
-                                            page.waitForSelector('.gw-review, [data-review-id], div[data-rating]', { timeout: 5000 })
-                                        ]);
+                                        log.info(`Clicking reviews button with selector: ${selector}`);
+                                        await page.click(selector);
+                                        
+                                        // Așteaptă ca panoul de recenzii să apară
+                                        const reviewPanelSelectors = [
+                                            '.gw-review', 
+                                            '[data-review-id]',
+                                            'div[data-rating]',
+                                            'div[jsaction*="reviewSort"]',
+                                            'div[role="feed"] div[jsl]'
+                                        ].join(', ');
+                                        
+                                        await page.waitForSelector(reviewPanelSelectors, { timeout: 8000 });
                                         reviewsOpened = true;
-                                        log.info(`Reviews section opened using selector: ${selector}`);
+                                        log.info(`Review panel opened successfully using ${selector}`);
+                                        
+                                        // Așteaptă pentru încărcare completă
+                                        await page.waitForTimeout(2000);
                                         break;
                                     } catch (err) {
-                                        log.debug(`Failed to open reviews with ${selector}: ${err.message}`);
+                                        log.info(`Failed to open reviews with selector ${selector}: ${err.message}`);
                                     }
                                 }
                             }
                             
-                            if (reviewsOpened) {
-                                // Sortare recenzii dacă e necesar
-                                if (input.reviewsSort && input.reviewsSort !== 'relevance') {
-                                    const sortButtonSelectors = [
-                                        'button[aria-label*="Sort"]',
-                                        'button[data-value="Sort"]',
-                                        'button[jsaction*="sort"]'
-                                    ];
-                                    
-                                    for (const selector of sortButtonSelectors) {
-                                        const sortButton = await page.$(selector);
-                                        if (sortButton) {
-                                            await sortButton.click();
-                                            await page.waitForTimeout(1000);
-                                            
-                                            // Selectează opțiunea de sortare
-                                            const sortOptionSelectors = {
-                                                'newest': 'li[aria-label*="newest"], span[aria-label*="newest"]',
-                                                'highest': 'li[aria-label*="highest"], span[aria-label*="highest"]',
-                                                'lowest': 'li[aria-label*="lowest"], span[aria-label*="lowest"]'
-                                            };
-                                            
-                                            const targetSelector = sortOptionSelectors[input.reviewsSort] || sortOptionSelectors['newest'];
-                                            const sortOption = await page.$(targetSelector);
-                                            
-                                            if (sortOption) {
-                                                await sortOption.click();
-                                                await page.waitForTimeout(2000);
-                                                log.info(`Reviews sorted by: ${input.reviewsSort}`);
-                                            }
-                                            break;
-                                        }
-                                    }
+                            if (!reviewsOpened) {
+                                log.info('Could not open the reviews panel. Trying alternate method...');
+                                
+                                // Metodă alternativă: căutăm direct recenziile în pagină
+                                const hasReviewsInPage = await page.evaluate(() => {
+                                    const reviewElements = document.querySelectorAll('.jftiEf, .DU9Pgb, [data-review-id]');
+                                    return reviewElements.length > 0;
+                                });
+                                
+                                if (hasReviewsInPage) {
+                                    log.info('Found reviews directly in the page without opening panel');
+                                    reviewsOpened = true;
                                 }
-                                
-                                // Scroll pentru a încărca mai multe recenzii
+                            }
+                            
+                            // Dacă am deschis panoul de recenzii, extragem datele
+                            if (reviewsOpened) {
+                                // Scrolling pentru a încărca mai multe recenzii
                                 await page.evaluate(async (maxReviews) => {
-                                    const reviewsContainer = document.querySelector('div[role="feed"], div[jsaction*="scroll"]');
-                                    if (reviewsContainer) {
-                                        const waitTime = 1000;
-                                        let lastHeight = reviewsContainer.scrollHeight;
-                                        let reviewCount = document.querySelectorAll('.gw-review, [data-review-id], div[data-rating]').length;
-                                        
-                                        // Scroll până ajungem la numărul dorit de recenzii sau nu mai avem progres
-                                        while (reviewCount < maxReviews) {
-                                            reviewsContainer.scrollTo(0, reviewsContainer.scrollHeight);
-                                            await new Promise(resolve => setTimeout(resolve, waitTime));
+                                    try {
+                                        const reviewsContainer = document.querySelector('div[role="feed"], div[jsaction*="scroll"], div.m6QErb[data-creative-load-listener]');
+                                        if (reviewsContainer) {
+                                            const waitTime = 800;
+                                            let lastHeight = reviewsContainer.scrollHeight;
+                                            let attempts = 0;
                                             
-                                            if (reviewsContainer.scrollHeight > lastHeight) {
-                                                lastHeight = reviewsContainer.scrollHeight;
-                                                reviewCount = document.querySelectorAll('.gw-review, [data-review-id], div[data-rating]').length;
-                                            } else {
-                                                // Am ajuns la capăt, nu mai avem progres
-                                                break;
+                                            while (attempts < 3) {
+                                                // Scroll la sfârșit
+                                                reviewsContainer.scrollTo(0, reviewsContainer.scrollHeight);
+                                                await new Promise(resolve => setTimeout(resolve, waitTime));
+                                                attempts++;
                                             }
                                         }
+                                    } catch (e) {
+                                        console.error('Error scrolling reviews:', e);
                                     }
-                                }, input.maxReviews);
+                                }, maxReviewsToExtract);
                                 
-                                // Extrage detaliile recenziilor
+                                // Așteaptă un moment pentru ca toate recenziile să fie încărcate complet
+                                await page.waitForTimeout(1500);
+                                
+                                // Extrage detaliile recenziilor - CORECTAT pentru a evita duplicarea
                                 const reviews = await page.evaluate((maxReviews) => {
-                                    const reviewList = [];
-                                    
-                                    // Încercăm multiple selectoare pentru a găsi containerele de recenzii
-                                    const reviewSelectors = [
-                                        '.gw-review',
-                                        '[data-review-id]',
-                                        'div[data-rating]'
-                                    ];
-                                    
-                                    let reviewElements = [];
-                                    for (const selector of reviewSelectors) {
-                                        const elements = document.querySelectorAll(selector);
-                                        if (elements && elements.length > 0) {
-                                            reviewElements = Array.from(elements).slice(0, maxReviews);
-                                            break;
+                                    try {
+                                        // Map pentru a ține evidența recenziilor unice după textul și autorul lor
+                                        const uniqueReviewMap = new Map();
+                                        
+                                        // Selectori pentru containerele de recenzii
+                                        const reviewSelectors = [
+                                            '.jftiEf',
+                                            '.DU9Pgb',
+                                            '[data-review-id]',
+                                            'div[data-rating]',
+                                            '.gws-localreviews__google-review',
+                                            'div.MyEned'
+                                        ];
+                                        
+                                        // Colectăm toate elementele de recenzie potrivite
+                                        let reviewElements = [];
+                                        for (const selector of reviewSelectors) {
+                                            const elements = document.querySelectorAll(selector);
+                                            if (elements && elements.length > 0) {
+                                                reviewElements = [...reviewElements, ...Array.from(elements)];
+                                            }
                                         }
-                                    }
-                                    
-                                    for (const reviewEl of reviewElements) {
-                                        try {
-                                            // Extrage numele autorului
-                                            let authorName = null;
-                                            const authorEl = reviewEl.querySelector('.d4r55, [role="link"], [jsan*="name"]');
-                                            if (authorEl) {
-                                                authorName = authorEl.textContent.trim();
-                                            }
-                                            
-                                            // Extrage ratingul
-                                            let rating = null;
-                                            // Încercăm să găsim stele
-                                            const ratingEl = reviewEl.querySelector('[aria-label*="stars"], [aria-label*="star"]');
-                                            if (ratingEl) {
-                                                const ratingText = ratingEl.getAttribute('aria-label');
-                                                const ratingMatch = ratingText.match(/(\d+(\.\d+)?)/);
-                                                if (ratingMatch) {
-                                                    rating = parseFloat(ratingMatch[1]);
+                                        
+                                        console.log(`Found ${reviewElements.length} potential review elements`);
+                                        
+                                        for (const reviewEl of reviewElements) {
+                                            try {
+                                                // Extrage numele autorului
+                                                let authorName = null;
+                                                const authorSelectors = [
+                                                    '.d4r55',
+                                                    '[role="link"]',
+                                                    'div.WNx3ff',
+                                                    'span.wiI7pd',
+                                                    '.k8MTF',
+                                                    '.tHacU'
+                                                ];
+                                                
+                                                for (const selector of authorSelectors) {
+                                                    const authorEl = reviewEl.querySelector(selector);
+                                                    if (authorEl && authorEl.textContent.trim()) {
+                                                        authorName = authorEl.textContent.trim();
+                                                        break;
+                                                    }
                                                 }
-                                            }
-                                            
-                                            // Alternativ, căutăm după data-rating
-                                            if (rating === null) {
-                                                const dataRating = reviewEl.getAttribute('data-rating');
-                                                if (dataRating) {
-                                                    rating = parseFloat(dataRating);
+                                                
+                                                // Extrage rating
+                                                let rating = null;
+                                                const ratingSelectors = [
+                                                    '[aria-label*="stars"]',
+                                                    '[aria-label*="star"]',
+                                                    'span[role="img"]'
+                                                ];
+                                                
+                                                for (const selector of ratingSelectors) {
+                                                    const ratingEl = reviewEl.querySelector(selector);
+                                                    if (ratingEl) {
+                                                        const ariaLabel = ratingEl.getAttribute('aria-label') || '';
+                                                        const ratingMatch = ariaLabel.match(/(\d+(\.\d+)?)/);
+                                                        if (ratingMatch) {
+                                                            rating = parseFloat(ratingMatch[1]);
+                                                            break;
+                                                        }
+                                                    }
                                                 }
+                                                
+                                                if (!rating) {
+                                                    const dataRating = reviewEl.getAttribute('data-rating');
+                                                    if (dataRating) {
+                                                        rating = parseFloat(dataRating);
+                                                    }
+                                                }
+                                                
+                                                // Extrage data
+                                                let date = null;
+                                                const dateSelectors = [
+                                                    '.rsqaWe',
+                                                    'time',
+                                                    'span.dehysf',
+                                                    '.iUtr1',
+                                                    'span.sdwAEb'
+                                                ];
+                                                
+                                                for (const selector of dateSelectors) {
+                                                    const dateEl = reviewEl.querySelector(selector);
+                                                    if (dateEl && dateEl.textContent.trim()) {
+                                                        date = dateEl.textContent.trim();
+                                                        break;
+                                                    }
+                                                }
+                                                
+                                                // Extrage textul
+                                                let text = null;
+                                                const textSelectors = [
+                                                    '.wiI7pd',
+                                                    '[data-review-text]',
+                                                    '.review-full-text',
+                                                    '.Jtu6Td',
+                                                    '.review-snippet'
+                                                ];
+                                                
+                                                for (const selector of textSelectors) {
+                                                    const textEl = reviewEl.querySelector(selector);
+                                                    if (textEl && textEl.textContent.trim()) {
+                                                        text = textEl.textContent.trim();
+                                                        break;
+                                                    }
+                                                }
+                                                
+                                                // Verifică dacă avem date valide înainte de a adăuga recenzia
+                                                if (authorName && authorName !== 'Anonymous' && 
+                                                    rating && rating > 0 && 
+                                                    date && date !== 'Unknown date' && 
+                                                    text && text !== 'No text') {
+                                                    
+                                                    // Creează un identificator unic pentru această recenzie
+                                                    const reviewKey = `${authorName}-${text.substring(0, 20)}`;
+                                                    
+                                                    // Adaugă recenzia numai dacă nu există deja
+                                                    if (!uniqueReviewMap.has(reviewKey)) {
+                                                        uniqueReviewMap.set(reviewKey, {
+                                                            authorName,
+                                                            rating,
+                                                            date,
+                                                            text
+                                                        });
+                                                    }
+                                                }
+                                            } catch (reviewErr) {
+                                                console.error('Error parsing review:', reviewErr);
                                             }
-                                            
-                                            // Extrage data
-                                            let date = null;
-                                            const dateEl = reviewEl.querySelector('.rsqaWe, time, [jsan*="date"]');
-                                            if (dateEl) {
-                                                date = dateEl.textContent.trim();
-                                            }
-                                            
-                                            // Extrage textul
-                                            let text = null;
-                                            const textEl = reviewEl.querySelector('.wiI7pd, [data-review-text], [jsan*="text"]');
-                                            if (textEl) {
-                                                text = textEl.textContent.trim();
-                                            }
-                                            
-                                            // Adaugă recenzia la listă dacă avem cel puțin unele date
-                                            if (authorName || rating || date || text) {
-                                                reviewList.push({
-                                                    authorName: authorName || 'Anonymous',
-                                                    rating: rating || 0,
-                                                    date: date || 'Unknown date',
-                                                    text: text || 'No text'
-                                                });
-                                            }
-                                        } catch (reviewErr) {
-                                            console.error('Error parsing review:', reviewErr);
                                         }
+                                        
+                                        // Convertește Map-ul înapoi la array și limitează la maxReviews
+                                        return Array.from(uniqueReviewMap.values()).slice(0, maxReviews);
+                                        
+                                    } catch (e) {
+                                        console.error('Error extracting reviews:', e);
+                                        return [];
                                     }
-                                    
-                                    return reviewList;
-                                    
-                                }, input.maxReviews);
+                                }, maxReviewsToExtract);
                                 
                                 if (reviews.length > 0) {
                                     placeData.reviews = reviews;
-                                    log.info(`Extracted ${reviews.length} reviews`);
+                                    log.info(`Successfully extracted ${reviews.length} unique reviews`);
+                                    
+                                    // Afișează prima recenzie pentru debugging
+                                    log.info(`First review sample: Author: ${reviews[0].authorName}, Rating: ${reviews[0].rating}, Date: ${reviews[0].date}`);
                                 } else {
-                                    log.info('No reviews found for this place');
+                                    log.info('No reviews were found or extracted for this place');
                                 }
                                 
                                 // Închide panoul de recenzii
-                                await page.keyboard.press('Escape');
-                                await page.waitForTimeout(1000);
+                                try {
+                                    await page.keyboard.press('Escape');
+                                    await page.waitForTimeout(1000);
+                                    log.info('Review panel closed successfully');
+                                } catch (e) {
+                                    log.warning(`Error closing review panel: ${e.message}`);
+                                }
                             } else {
-                                log.info('Could not open reviews section');
+                                log.info('Could not open reviews section for this place');
                             }
                         } catch (e) {
                             log.warning(`Error extracting reviews: ${e.message}`);
