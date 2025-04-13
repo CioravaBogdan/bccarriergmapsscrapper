@@ -284,32 +284,146 @@ Apify.main(async () => {
                     log.info('Scrolled down search results page.');
 
 
-                    // Extragere rezultate folosind DOM (more reliable than internal state)
-                    const places = await page.evaluate((selector) => {
+                    // Extragere rezultate folosind DOM cu debug
+                    const places = await page.evaluate(() => {
                         const results = [];
-                        const placeElements = document.querySelectorAll(selector);
-                        placeElements.forEach(el => {
-                            const linkElement = el.querySelector('a[href*="/maps/place/"]');
-                            const url = linkElement ? linkElement.href : null;
-                            if (url) {
-                                const titleElement = el.querySelector('div.fontHeadlineSmall'); // Common selector for title
-                                const title = titleElement ? titleElement.textContent.trim() : null;
-                                // Extract Place ID from URL if possible
-                                let placeId = null;
-                                const placeIdMatch = url.match(/!1s([^!]+)/); // Regex to find Place ID pattern in URL
-                                if (placeIdMatch && placeIdMatch[1]) {
-                                    placeId = placeIdMatch[1];
+                        
+                        // 1. Încercăm să găsim containerul principal de rezultate
+                        const resultContainer = document.querySelector('div[role="feed"]');
+                        if (!resultContainer) {
+                            console.error('Feed container not found');
+                            return results;
+                        }
+                        
+                        // 2. Găsim toate articolele (rezultatele) din container
+                        // Încercăm multiple selectoare pentru a găsi rezultatele
+                        const resultSelectors = [
+                            'div[role="article"]',
+                            'a[href*="/maps/place/"]',  // Link-uri directe către locații
+                            '.Nv2PK'                   // Clasa comună pentru rezultate în Google Maps
+                        ];
+                        
+                        let placeElements = [];
+                        // Testăm fiecare selector până găsim unul care returnează rezultate
+                        for (const selector of resultSelectors) {
+                            const elements = resultContainer.querySelectorAll(selector);
+                            if (elements && elements.length > 0) {
+                                console.log(`Found ${elements.length} results using selector ${selector}`);
+                                placeElements = Array.from(elements);
+                                break;
+                            }
+                        }
+                        
+                        console.log(`Total place elements found: ${placeElements.length}`);
+                        
+                        // 3. Procesăm fiecare element găsit pentru a extrage informațiile
+                        placeElements.forEach((el, index) => {
+                            try {
+                                // Găsim link-ul către locație
+                                let linkElement = null;
+                                
+                                // Dacă elementul este deja un link
+                                if (el.tagName === 'A' && el.href && el.href.includes('/maps/place/')) {
+                                    linkElement = el;
+                                } else {
+                                    // Altfel, căutăm link-uri în interior
+                                    linkElement = el.querySelector('a[href*="/maps/place/"]');
                                 }
-                                results.push({ title, url, placeId });
+                                
+                                if (!linkElement || !linkElement.href) {
+                                    // Adăugăm o logică de fallback pentru a găsi link-uri
+                                    const allLinks = el.querySelectorAll('a[href*="/maps/"]');
+                                    for (const link of allLinks) {
+                                        if (link.href.includes('/maps/place/') || link.href.includes('/maps/search/')) {
+                                            linkElement = link;
+                                            break;
+                                        }
+                                    }
+                                }
+                                
+                                // Dacă am găsit un link valid
+                                if (linkElement && linkElement.href) {
+                                    // Găsește titlul (numele afacerii)
+                                    let title = null;
+                                    
+                                    // Încercăm diferite metode pentru a găsi titlul
+                                    // Metoda 1: Element cu clasa fontHeadlineSmall
+                                    const headlineEl = el.querySelector('.fontHeadlineSmall');
+                                    if (headlineEl) {
+                                        title = headlineEl.textContent.trim();
+                                    }
+                                    
+                                    // Metoda 2: Element cu aria-label pentru numele afacerii
+                                    if (!title) {
+                                        const nameEl = el.querySelector('[aria-label]');
+                                        if (nameEl) {
+                                            title = nameEl.getAttribute('aria-label').trim();
+                                        }
+                                    }
+                                    
+                                    // Metoda 3: Primul element h3 sau div puternic stilizat
+                                    if (!title) {
+                                        const possibleTitleEl = el.querySelector('h3, div.fontTitleLarge, div.gm2-headline-5');
+                                        if (possibleTitleEl) {
+                                            title = possibleTitleEl.textContent.trim();
+                                        }
+                                    }
+                                    
+                                    // Fallback: Folosim numele din URL
+                                    if (!title) {
+                                        const urlParts = linkElement.href.split('/');
+                                        const nameFromUrl = urlParts[urlParts.indexOf('place') + 1];
+                                        if (nameFromUrl) {
+                                            title = decodeURIComponent(nameFromUrl).replace(/\+/g, ' ');
+                                        }
+                                    }
+                                    
+                                    // Setăm cel puțin un titlu generic dacă nu am putut găsi unul specific
+                                    title = title || `Place Result ${index + 1}`;
+                                    
+                                    // Extragem Place ID din URL dacă este posibil
+                                    let placeId = null;
+                                    const placeIdMatch = linkElement.href.match(/!1s([^!]+)/);
+                                    if (placeIdMatch && placeIdMatch[1]) {
+                                        placeId = placeIdMatch[1];
+                                    }
+                                    
+                                    // Adăugăm rezultatul la listă
+                                    results.push({ 
+                                        title, 
+                                        url: linkElement.href, 
+                                        placeId,
+                                        index
+                                    });
+                                    console.log(`Added result #${index + 1}: ${title}`);
+                                }
+                            } catch (error) {
+                                console.error(`Error processing result #${index + 1}: ${error.message}`);
                             }
                         });
+                        
+                        console.log(`Returning ${results.length} extracted places`);
                         return results;
-                    }, resultsSelector);
+                    });
 
                     log.info(`Found ${places.length} potential places on the current page.`);
-
                     if (places.length === 0) {
+                        // Salvăm un screenshot pentru debugging
+                        await page.screenshot({ path: './screenshots/search-results-debug.png', fullPage: true });
                         log.warning('No place URLs extracted from the search results page. Check selectors.');
+                        
+                        // Adăugăm informații detaliate pentru debug
+                        const pageDebugInfo = await page.evaluate(() => {
+                            return {
+                                title: document.title,
+                                url: window.location.href,
+                                hasFeed: !!document.querySelector('div[role="feed"]'),
+                                hasArticles: document.querySelectorAll('div[role="article"]').length,
+                                visibleText: document.body.innerText.substring(0, 1000),
+                                linksCount: document.querySelectorAll('a[href*="/maps/place/"]').length
+                            };
+                        });
+                        log.info('Page debug info:', pageDebugInfo);
                     }
 
                     let enqueuedCount = 0;
@@ -333,7 +447,7 @@ Apify.main(async () => {
                             // Note: Apify's RequestQueue handles this automatically if keepUrlFragment is false (default)
                             await requestQueue.addRequest({
                                 url: place.url,
-                                userData: { label: 'DETAIL', placeName: place.title || place.placeId || 'Unknown Place' }
+                                userData: { label: 'DETAIL', placeName: place.title || placeId || 'Unknown Place' }
                             });
                             enqueuedCount++;
                         }
