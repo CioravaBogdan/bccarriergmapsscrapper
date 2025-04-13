@@ -62,53 +62,66 @@ Apify.main(async () => {
             await requestQueue.addRequest(req);
             initialRequestCount++;
         }
-    } else {
-        // Înlocuiește secțiunea actuală cu acest cod mai bun pentru construirea URL-urilor
+    }
 
-        // Construiește URL-ul de căutare dacă nu avem startUrls
-        if (startUrls.length === 0) {
-            if (search) {
-                log.info('Generating search URL from keywords and location...');
-                const searchTermEncoded = encodeURIComponent(search);
-                
-                // Verifică dacă avem coordonate specifice
-                if (input.latitude && input.longitude) {
-                    const searchUrl = `https://www.google.com/maps/search/${searchTermEncoded}/@${input.latitude},${input.longitude},14z`;
-                    log.info(`Adding search URL with coordinates: ${searchUrl}`);
-                    await requestQueue.addRequest({ 
-                        url: searchUrl, 
-                        userData: { 
-                            label: 'SEARCH', 
-                            search, 
-                            coordinates: { lat: input.latitude, lng: input.longitude } 
-                        } 
-                    });
-                } 
-                // Dacă avem o locație specificată ca text
-                else if (searchLocation) {
-                    const locationEncoded = encodeURIComponent(searchLocation);
-                    // Format corect: "căutare în locație"
-                    const searchUrl = `https://www.google.com/maps/search/${searchTermEncoded}+in+${locationEncoded}/`;
-                    log.info(`Adding search URL with location: ${searchUrl}`);
-                    await requestQueue.addRequest({ 
-                        url: searchUrl, 
-                        userData: { label: 'SEARCH', search, searchLocation } 
-                    });
-                }
-                // Doar căutare după cuvinte cheie
-                else {
-                    const searchUrl = `https://www.google.com/maps/search/${searchTermEncoded}/`;
-                    log.info(`Adding search URL with only keywords: ${searchUrl}`);
-                    await requestQueue.addRequest({ 
-                        url: searchUrl, 
-                        userData: { label: 'SEARCH', search } 
-                    });
-                }
-                initialRequestCount++;
-            } else {
-                throw new Error('Input error: You must provide either "startUrls" or "search" parameters.');
+    // Al doilea pas: dacă avem termeni de căutare și startUrls, adaugă și căutarea
+    if (search && startUrls.length > 0) {
+        // Vom folosi coordonatele primei locații pentru căutare
+        // Acest cod este executat după ce se termină procesarea startUrls
+        log.info('Adding search tasks to be processed after initial URLs');
+        
+        // Adaugă o cerere specială care va iniția căutarea după procesarea URL-urilor inițiale
+        await requestQueue.addRequest({
+            url: startUrls[0].url || startUrls[0], 
+            userData: { 
+                label: 'EXTRACT_AND_SEARCH',
+                search: search,
+                searchRadius: searchRadius || 5
             }
+        });
+        initialRequestCount++;
+    } 
+    // Cazul standard când avem doar căutare fără startUrls (neschimbat)
+    else if (search && startUrls.length === 0) {
+        log.info('Generating search URL from keywords and location...');
+        const searchTermEncoded = encodeURIComponent(search);
+        
+        // Verifică dacă avem coordonate specifice
+        if (input.latitude && input.longitude) {
+            const searchUrl = `https://www.google.com/maps/search/${searchTermEncoded}/@${input.latitude},${input.longitude},14z`;
+            log.info(`Adding search URL with coordinates: ${searchUrl}`);
+            await requestQueue.addRequest({ 
+                url: searchUrl, 
+                userData: { 
+                    label: 'SEARCH', 
+                    search, 
+                    coordinates: { lat: input.latitude, lng: input.longitude } 
+                } 
+            });
+        } 
+        // Dacă avem o locație specificată ca text
+        else if (searchLocation) {
+            const locationEncoded = encodeURIComponent(searchLocation);
+            // Format corect: "căutare în locație"
+            const searchUrl = `https://www.google.com/maps/search/${searchTermEncoded}+in+${locationEncoded}/`;
+            log.info(`Adding search URL with location: ${searchUrl}`);
+            await requestQueue.addRequest({ 
+                url: searchUrl, 
+                userData: { label: 'SEARCH', search, searchLocation } 
+            });
         }
+        // Doar căutare după cuvinte cheie
+        else {
+            const searchUrl = `https://www.google.com/maps/search/${searchTermEncoded}/`;
+            log.info(`Adding search URL with only keywords: ${searchUrl}`);
+            await requestQueue.addRequest({ 
+                url: searchUrl, 
+                userData: { label: 'SEARCH', search } 
+            });
+        }
+        initialRequestCount++;
+    } else {
+        throw new Error('Input error: You must provide either "startUrls" or "search" parameters.');
     }
     log.info(`Request queue initialized with ${initialRequestCount} request(s).`);
 
@@ -315,6 +328,57 @@ Apify.main(async () => {
                     throw e;
                 }
 
+            } else if (label === 'EXTRACT_AND_SEARCH') {
+                // Așteaptă încărcarea paginii și extrage coordonatele
+                await page.waitForSelector('h1', { timeout: 20000 }).catch(() => {
+                    log.warning('Timeout waiting for h1 element - page might not have loaded properly');
+                });
+
+                // Extrage coordonatele din pagină
+                const coordinates = await page.evaluate(() => {
+                    try {
+                        // Metodă 1: Caută în URL
+                        const urlMatch = window.location.href.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
+                        if (urlMatch && urlMatch.length >= 3) {
+                            return {
+                                lat: parseFloat(urlMatch[1]),
+                                lng: parseFloat(urlMatch[2])
+                            };
+                        }
+                        
+                        // Restul metodelor de extragere a coordonatelor
+                        // ... (codul existent pentru extragerea coordonatelor)
+                        
+                        return { lat: 0, lng: 0 }; // fallback
+                    } catch (e) {
+                        console.error('Error extracting coordinates:', e);
+                        return { lat: 0, lng: 0 };
+                    }
+                });
+
+                if (coordinates.lat !== 0 && coordinates.lng !== 0) {
+                    log.info(`Extracted coordinates for search: ${coordinates.lat}, ${coordinates.lng}`);
+                    
+                    // Construiește URL-ul de căutare în apropierea acestor coordonate
+                    const searchTermEncoded = encodeURIComponent(request.userData.search);
+                    const searchRadius = request.userData.searchRadius || 5;
+                    const zoom = 15 - Math.min(Math.floor(searchRadius / 2), 10); // Zoom level based on radius
+                    
+                    const searchUrl = `https://www.google.com/maps/search/${searchTermEncoded}/@${coordinates.lat},${coordinates.lng},${zoom}z`;
+                    log.info(`Adding search URL with coordinates: ${searchUrl}`);
+                    
+                    await requestQueue.addRequest({ 
+                        url: searchUrl, 
+                        userData: { 
+                            label: 'SEARCH', 
+                            search: request.userData.search, 
+                            coordinates: coordinates,
+                            searchRadius: searchRadius
+                        } 
+                    });
+                } else {
+                    log.warning('Could not extract coordinates from the page. Search around this location skipped.');
+                }
             } else if (label === 'DETAIL') {
                 // Check maxItems limit before processing
                 if (maxItems > 0 && scrapedItemsCount >= maxItems) {
