@@ -790,119 +790,161 @@ Apify.main(async () => {
                     
                     placeData.plusCode = plusCode;
                     
-                    // Extrage imagini cu metode multiple
-                    if (input.maxImages > 0) {
+                    // Extrage imagini - imbunatatit
+                    const imageExtractionCode = async () => {
                         try {
-                            // Încercare 1: Direct din DOM, fără a deschide galeria
-                            let extractedImageUrls = await page.evaluate((maxImg) => {
+                            // Forțăm extragerea imaginilor indiferent de valoarea maxImages
+                            const maxImagesToExtract = input.maxImages || 5; // Folosim 5 ca valoare implicită
+                            log.info(`Attempting to extract up to ${maxImagesToExtract} images...`);
+                            
+                            // Pasul 1: Găsește toate imaginile direct din DOM pentru eficiență
+                            let extractedImageUrls = await page.evaluate(() => {
                                 const imgUrls = [];
                                 
-                                // Găsește toate imaginile din pagină
-                                const imgElements = document.querySelectorAll('img[src*="googleusercontent"], img[data-src*="googleusercontent"]');
+                                // Găsește toate imaginile din pagină - selectori îmbunătățiți
+                                const allImages = [
+                                    ...document.querySelectorAll('img[src*="googleusercontent"]'),
+                                    ...document.querySelectorAll('img[data-src*="googleusercontent"]'),
+                                    ...document.querySelectorAll('img[srcset*="googleusercontent"]'),
+                                    ...document.querySelectorAll('button[jsaction*="pane.heroHeaderImage"] img')
+                                ];
                                 
-                                imgElements.forEach(img => {
-                                    const src = img.src || img.getAttribute('data-src');
-                                    if (imgUrls.length < maxImg && src) {
-                                        // Optimizare: Înlocuiește cu URL-ul la rezoluție mai mare
+                                // Extrage URL-urile de imagini și elimină duplicatele
+                                allImages.forEach(img => {
+                                    const src = img.src || img.getAttribute('data-src') || '';
+                                    if (src && src.includes('googleusercontent')) {
+                                        // Optimizare: Înlocuiește cu URL-ul la rezoluție mare
                                         const highResUrl = src.replace(/=w\d+-h\d+/, '=w1200-h1200');
-                                        if (!imgUrls.includes(highResUrl) && highResUrl.includes('googleusercontent')) {
+                                        if (!imgUrls.includes(highResUrl)) {
                                             imgUrls.push(highResUrl);
                                         }
                                     }
                                 });
                                 
                                 return imgUrls;
-                            }, input.maxImages || 5);
+                            });
                             
-                            // Dacă nu am găsit imagini direct, încercăm să deschidem galeria
+                            if (extractedImageUrls.length > 0) {
+                                log.info(`Found ${extractedImageUrls.length} images directly in the page`);
+                            } else {
+                                log.info(`No images found directly in the page. Trying to open gallery...`);
+                            }
+                            
+                            // Pasul 2: Dacă nu găsim imagini direct, încercăm să deschidem galeria
                             if (extractedImageUrls.length === 0) {
-                                log.info('Trying to open image gallery to extract photos...');
-                                
-                                // Lista de selectori pentru butoane de galerie
+                                // Lista de selectori pentru butoanele de galerie - îmbunătățită
                                 const galleryButtonSelectors = [
                                     'button[data-item-id*="image"]',
                                     'button[jsaction*="photo"]',
-                                    'button[jsaction*="image"]',
+                                    'button[jsaction*="image"]', 
                                     'button[aria-label*="photo"]',
-                                    'a[href*="photo"]',
-                                    'img.Cur7sb'
+                                    'img.Cur7sb',
+                                    'div[style*="background-image"]',
+                                    'div[data-photo-index="0"]',
+                                    'div.RZ66Rb img',
+                                    'button[aria-label*="View all photos"]'
                                 ];
                                 
-                                // Încearcă fiecare selector
+                                // Debug - afișează dacă găsim vreun buton de galerie
+                                for (const selector of galleryButtonSelectors) {
+                                    const hasButton = await page.$(selector);
+                                    if (hasButton) {
+                                        log.info(`Found gallery button with selector: ${selector}`);
+                                    }
+                                }
+                                
+                                // Încearcă să deschidă galeria
                                 let galleryOpened = false;
                                 for (const selector of galleryButtonSelectors) {
                                     const hasButton = await page.$(selector);
                                     if (hasButton) {
                                         try {
-                                            await Promise.all([
-                                                page.click(selector),
-                                                page.waitForSelector('div[data-photo-index], img[src*="googleusercontent"][srcset]', { timeout: 5000 })
-                                            ]);
+                                            log.info(`Clicking gallery button with selector: ${selector}`);
+                                            await page.click(selector);
+                                            
+                                            // Așteaptă ca galeria să se deschidă
+                                            await page.waitForSelector([
+                                                'div[data-photo-index]',
+                                                'img[src*="googleusercontent"][srcset]',
+                                                'div.gallery-image-high-res',
+                                                'div[data-thumbnail-index]'
+                                            ].join(', '), { timeout: 5000 });
+                                            
                                             galleryOpened = true;
-                                            log.info(`Gallery opened using selector: ${selector}`);
+                                            log.info(`Gallery opened successfully using ${selector}`);
+                                            
+                                            // Așteaptă încărcarea completă
+                                            await page.waitForTimeout(2000);
                                             break;
                                         } catch (err) {
-                                            log.debug(`Failed to open gallery with ${selector}: ${err.message}`);
+                                            log.info(`Failed to open gallery with selector ${selector}: ${err.message}`);
                                         }
                                     }
                                 }
                                 
-                                // Dacă am reușit să deschidem galeria, extragem link-urile
+                                // Extrage URL-urile din galerie, dacă s-a deschis
                                 if (galleryOpened) {
-                                    // Așteaptă ca imaginile să se încarce
-                                    await page.waitForTimeout(2000);
-                                    
-                                    // Extrage URL-uri de imagini din galerie
-                                    extractedImageUrls = await page.evaluate((maxImg) => {
+                                    extractedImageUrls = await page.evaluate(() => {
                                         const imgUrls = [];
                                         
-                                        // Găsește toate imaginile din galerie - încercăm multiple selectoare
-                                        const imgSelectors = [
+                                        // Găsește toate imaginile din galerie
+                                        const gallerySelectors = [
                                             'img[src*="googleusercontent"][srcset]',
                                             'div[data-photo-index] img',
                                             'img[width="1000"]',
-                                            'img[style*="translateZ"]'
+                                            'img[style*="translateZ"]',
+                                            'div.gallery-image-high-res img'
                                         ];
                                         
                                         let imgElements = [];
-                                        for (const selector of imgSelectors) {
+                                        for (const selector of gallerySelectors) {
                                             const elements = document.querySelectorAll(selector);
                                             if (elements && elements.length > 0) {
-                                                imgElements = Array.from(elements);
-                                                break;
+                                                imgElements = [...imgElements, ...Array.from(elements)];
                                             }
                                         }
                                         
+                                        // Deduplică și adaugă la rezultate
                                         imgElements.forEach(img => {
-                                            if (imgUrls.length < maxImg && img.src) {
-                                                // Optimizare: Înlocuiește cu URL-ul la rezoluție mai mare
+                                            if (img.src && img.src.includes('googleusercontent')) {
                                                 const highResUrl = img.src.replace(/=w\d+-h\d+/, '=w1200-h1200');
-                                                if (!imgUrls.includes(highResUrl) && highResUrl.includes('googleusercontent')) {
+                                                if (!imgUrls.includes(highResUrl)) {
                                                     imgUrls.push(highResUrl);
                                                 }
                                             }
                                         });
                                         
                                         return imgUrls;
-                                    }, input.maxImages || 5);
+                                    });
                                     
-                                    // Închide galeria apăsând Escape
-                                    await page.keyboard.press('Escape');
-                                    await page.waitForTimeout(1000);
+                                    log.info(`Extracted ${extractedImageUrls.length} images from gallery`);
+                                    
+                                    // Închide galeria
+                                    try {
+                                        await page.keyboard.press('Escape');
+                                        await page.waitForTimeout(1000);
+                                        log.info('Gallery closed successfully');
+                                    } catch (err) {
+                                        log.warning(`Error closing gallery: ${err.message}`);
+                                    }
                                 }
                             }
                             
+                            // Limitează numărul de imagini la maxImagesToExtract
                             if (extractedImageUrls.length > 0) {
-                                placeData.imageUrls = extractedImageUrls;
-                                log.info(`Extracted ${placeData.imageUrls.length} image URLs`);
+                                placeData.imageUrls = extractedImageUrls.slice(0, maxImagesToExtract);
+                                log.info(`Final image count: ${placeData.imageUrls.length}`);
                             } else {
-                                log.info('No images found for this place');
+                                log.info('No images could be extracted for this place');
                             }
                         } catch (e) {
-                            log.warning(`Error extracting images: ${e.message}`);
+                            log.warning(`Error during image extraction: ${e.message}`);
                         }
-                    }
-                    
+                    };
+
+                    // Execută funcția de extragere a imaginilor
+                    await imageExtractionCode();
+
                     // Extragerea profilurilor sociale din pagina de locație
                     const socialProfiles = await page.evaluate(() => {
                         const profiles = {};

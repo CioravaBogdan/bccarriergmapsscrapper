@@ -56,12 +56,19 @@
       "editor": "checkbox",
       "default": true
     },
+    "maxImages": {
+      "title": "Maximum images per place",
+      "type": "integer",
+      "description": "Maximum number of images to extract for each place. Use 0 to extract none.",
+      "default": 5,
+      "minimum": 0
+    },
     "maxReviews": {
       "title": "Maximum reviews per place",
       "type": "integer",
-      "description": "Number of reviews to extract per place (0 = none)",
-      "editor": "number",
-      "default": 0
+      "description": "Maximum number of reviews to extract for each place. Use 0 to extract none.",
+      "default": 5,
+      "minimum": 0
     },
     "language": {
       "title": "Language",
