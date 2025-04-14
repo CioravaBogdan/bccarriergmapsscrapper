@@ -1,5 +1,4 @@
-const Apify = require('apify');
-const { log } = Apify.utils;
+const { Actor, log } = require('apify');
 
 // --- Constants and Regex Patterns ---
 // More robust email regex, allows for newer TLDs
