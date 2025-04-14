@@ -351,7 +351,7 @@ Apify.main(async () => {
 
                     // Coordinates from URL (fallback)
                     let lat = null, lng = null;
-                    const urlMatch = window.location.href.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/;
+                    const urlMatch = window.location.href.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
                     if (urlMatch) {
                         lat = parseFloat(urlMatch[1]);
                         lng = parseFloat(urlMatch[2]);
