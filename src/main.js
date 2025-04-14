@@ -4,7 +4,7 @@ const { Actor, log } = require('apify');
 // For sleep functionality, use:
 const { sleep } = require('apify');
 
-const { extractContactDetails } = require('./utils/extract-contact');
+const { extractContactDetails, ABORT_RESOURCE_TYPES_DEFAULT } = require('./utils/extract-contact');
 const CostEstimator = require('./utils/cost-estimator'); // Import the class
 
 // --- Helper Functions ---

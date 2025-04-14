@@ -3,13 +3,13 @@
  * based on typical compute and proxy usage for various operations.
  */
 class CostEstimator {
-    constructor() {
+    constructor(maxCostUsd = 0) {
         // Initialize counters
         this.placeSearches = 0;        // Number of search queries
         this.placesListed = 0;         // Places found in search results
         this.detailPagesScrapes = 0;   // Number of detail pages visited
         this.contactExtractions = 0;   // Number of website contact extractions
-        this.maxCost = 0;              // Maximum allowed cost (0 = unlimited)
+        this.maxCost = maxCostUsd || 0;// Maximum allowed cost (0 = unlimited)
         
         // Default cost factors (in USD)
         this.costPerSearch = 0.005;        // Cost per search query
@@ -27,6 +27,43 @@ class CostEstimator {
     }
 
     /**
+     * Add a place detail scrape and check budget
+     * @returns {boolean} False if budget exceeded
+     */
+    addPlace(count = 1) {
+        this.detailPagesScrapes += count;
+        return this.checkBudget();
+    }
+
+    /**
+     * Add details extraction cost and check budget
+     * @returns {boolean} False if budget exceeded
+     */
+    addDetails(count = 1) {
+        // This is a lighter operation than a full detail page scrape
+        this.detailPagesScrapes += count * 0.5;
+        return this.checkBudget();
+    }
+
+    /**
+     * Add contact extraction cost and check budget
+     * @returns {boolean} False if budget exceeded
+     */
+    addContact(count = 1) {
+        this.contactExtractions += count;
+        return this.checkBudget();
+    }
+
+    /**
+     * Check if current cost is within budget
+     * @returns {boolean} False if budget exceeded
+     */
+    checkBudget() {
+        if (this.maxCost <= 0) return true; // 0 = unlimited
+        return this.getCurrentCost() < this.maxCost;
+    }
+
+    /**
      * Log a search operation
      * @param {number} searchCount Number of searches (default: 1)
      */
@@ -40,22 +77,6 @@ class CostEstimator {
      */
     addListings(placesCount = 1) {
         this.placesListed += placesCount;
-    }
-
-    /**
-     * Log a detail page scrape
-     * @param {number} detailCount Number of detail pages (default: 1)
-     */
-    addDetailScrapes(detailCount = 1) {
-        this.detailPagesScrapes += detailCount;
-    }
-
-    /**
-     * Log a contact extraction operation
-     * @param {number} contactCount Number of contact extractions (default: 1)
-     */
-    addContactExtractions(contactCount = 1) {
-        this.contactExtractions += contactCount;
     }
 
     /**
@@ -78,6 +99,16 @@ class CostEstimator {
     isCostLimitReached() {
         if (this.maxCost <= 0) return false; // 0 means unlimited
         return this.getCurrentCost() >= this.maxCost;
+    }
+
+    /**
+     * Log a summary of cost data
+     */
+    async logReport() {
+        const { Actor, log } = require('apify');
+        const summary = this.getSummary();
+        log.info(`Cost Summary: $${summary.costs.totalCost} (${summary.operations.detailPagesScrapes} detail pages, ${summary.operations.contactExtractions} contact extractions)`);
+        await Actor.setValue('COST_SUMMARY', summary);
     }
 
     /**
