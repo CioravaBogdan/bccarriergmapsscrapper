@@ -1,1303 +1,585 @@
-// Importăm SDK-ul Apify și extragem utilitarele necesare
 const Apify = require('apify');
-const { log } = Apify.utils;
-// Importăm funcția auxiliară pentru extragerea contactelor
+const { log, sleep } = Apify.utils; // Use sleep from utils
 const { extractContactDetails } = require('./utils/extract-contact');
+const CostEstimator = require('./utils/cost-estimator'); // Import the class
 
-// Randomized delay function to mimic human behavior
-const randomDelay = async (min = 2000, max = 5000) => {
+// --- Helper Functions ---
+const randomDelay = async (min = 1000, max = 3000) => { // Shorter delays often suffice
     const delay = Math.floor(Math.random() * (max - min + 1)) + min;
     log.debug(`Waiting for random delay of ${delay}ms`);
-    await new Promise(resolve => setTimeout(resolve, delay));
+    await sleep(delay); // Use Apify.utils.sleep
 };
 
+// Function to perform robust scrolling
+async function infiniteScroll(page, scrollSelector, maxScrolls = 20) {
+    log.info(`Starting infinite scroll within selector: ${scrollSelector}`);
+    let scrolls = 0;
+    let lastHeight = 0;
+    try {
+        while (scrolls < maxScrolls) {
+            const newHeight = await page.evaluate((selector) => {
+                const element = document.querySelector(selector);
+                if (!element) return -1; // Element not found
+                element.scrollBy(0, element.scrollHeight); // Scroll down
+                return element.scrollHeight;
+            }, scrollSelector);
+
+            if (newHeight === -1) {
+                log.warning(`Scroll element ${scrollSelector} not found.`);
+                break;
+            }
+            if (newHeight === lastHeight) {
+                log.info(`Scroll height hasn't changed (${newHeight}px). Assuming end of results.`);
+                break; // Reached the bottom or no new content loaded
+            }
+            lastHeight = newHeight;
+            scrolls++;
+            log.debug(`Scrolled down ${scrolls} times, new height: ${newHeight}px`);
+            await sleep(1500 + Math.random() * 1000); // Wait for content to load
+        }
+        log.info(`Finished scrolling after ${scrolls} scrolls.`);
+    } catch (e) {
+        log.warning(`Error during scrolling: ${e.message}`);
+    }
+}
+
+// --- Main Actor Logic ---
 Apify.main(async () => {
-    // 1. Citirea input-ului și definirea parametrilor cu valori implicite
     log.info('Reading input...');
     const input = await Apify.getInput();
 
-    // Extrage setările din noul format flat
-    const searchStringsArray = input.searchStringsArray || [];
-    const searchLocation = input.searchLocation || '';
-    const customGeolocation = input.customGeolocation || null;
-    const startUrls = input.startUrls || [];
+    // --- Input Processing & Validation ---
+    const {
+        searchStringsArray = [],
+        searchLocation = '',
+        customGeolocation = null,
+        startUrls = [],
+        maxCrawledPlacesPerSearch = 0, // 0 means unlimited for this specific search
+        maxCrawledPlaces = 0, // 0 means unlimited total
+        maxCostPerRun = 0,
+        scrapeContacts = true,
+        scrapePlaceDetailPage = true, // Default to true if not provided
+        skipClosedPlaces = false,
+        maxImages = 5,
+        maxReviews = 5,
+        reviewsSort = 'newest', // Default sort
+        language = 'en',
+        proxyConfig = { useApifyProxy: true, apifyProxyGroups: ['RESIDENTIAL'] },
+        costOptimizedMode = false,
+        skipContactExtraction = false,
+    } = input;
 
-    const maxCrawledPlacesPerSearch = input.maxCrawledPlacesPerSearch || 0;
-    const maxCrawledPlaces = input.maxCrawledPlaces || 0; 
-    const maxCostPerRun = input.maxCostPerRun || 0;
-
-    const scrapeContacts = input.scrapeContacts !== false;
-    const scrapePlaceDetailPage = input.scrapePlaceDetailPage !== false;
-    const skipClosedPlaces = input.skipClosedPlaces || false;
-    const maxImages = input.maxImages || 0;
-    const maxReviews = input.maxReviews || 0;
-    const reviewsSort = input.reviewsSort || 'newest';
-
-    const language = input.language || 'en';
-    const proxyConfig = input.proxyConfig || {
-        useApifyProxy: true,
-        apifyProxyGroups: ['RESIDENTIAL']
-    };
-
-    // Validare input minim necesar
-    if (!startUrls.length && (!searchStringsArray.length || !searchLocation)) {
-        throw new Error('Input error: You must provide either "startUrls" or both "search" and "searchLocation".');
+    if (!startUrls.length && (!searchStringsArray.length || (!searchLocation && !customGeolocation))) {
+        throw new Error('Input error: Provide "startUrls", or "searchStringsArray" with "searchLocation" or "customGeolocation".');
     }
 
-    // 2. Configurare Proxy
-    log.info('Configuring proxy with residential IPs...');
-    const proxyConfiguration = await Apify.createProxyConfiguration(proxyConfig);
-    if (!proxyConfiguration) {
-        log.warning('Proxy configuration failed. Continuing without proxy, risk of blocking is high.');
-    } else {
-        log.info('Proxy configured successfully.');
-    }
+    // Apply cost optimization overrides
+    const effectiveMaxImages = costOptimizedMode ? Math.min(maxImages, 1) : maxImages;
+    const effectiveMaxReviews = costOptimizedMode ? Math.min(maxReviews, 1) : maxReviews;
+    const effectiveScrapeContacts = costOptimizedMode || skipContactExtraction ? false : scrapeContacts;
+    const effectiveNavigationTimeout = costOptimizedMode ? 45 : 90; // Shorter timeouts
+    const effectiveHandlePageTimeout = costOptimizedMode ? 120 : 240;
 
-    // 3. Inițializare coadă de URL-uri (RequestQueue)
+    // --- Initialize Utilities ---
+    const costEstimator = new CostEstimator(maxCostPerRun);
+    const state = await Apify.getValue('STATE') || { scrapedItemsCount: 0 };
+    let scrapedItemsCount = state.scrapedItemsCount;
+
+    // --- Proxy Configuration ---
+    log.info('Configuring proxy...');
+    const proxyConfiguration = await Apify.createProxyConfiguration({
+        ...proxyConfig,
+        // Groups: ['RESIDENTIAL'], // Ensure residential if needed
+    });
+    log.info('Proxy configured.');
+
+    // --- Request Queue Initialization ---
     log.info('Initializing request queue...');
     const requestQueue = await Apify.openRequestQueue();
     let initialRequestCount = 0;
-    if (startUrls.length > 0) {
-        // Adăugăm URL-urile de start direct din listă
-        for (const urlEntry of startUrls) {
-            const req = typeof urlEntry === 'string' ? { url: urlEntry } : urlEntry;
-            req.userData = req.userData || {};
-            if (!req.userData.label) {
-                req.userData.label = req.url.includes('/search') ? 'SEARCH' : 'DETAIL';
+
+    // Add Start URLs first
+    for (const urlEntry of startUrls) {
+        const req = typeof urlEntry === 'string' ? { url: urlEntry } : urlEntry;
+        if (!req.url) continue;
+        req.userData = req.userData || {};
+        // Determine label based on URL structure
+        if (!req.userData.label) {
+            if (req.url.includes('/maps/search/')) {
+                req.userData.label = 'SEARCH';
+                // Try to extract search term if possible (optional)
+                const match = req.url.match(/\/maps\/search\/([^/@]+)/);
+                req.userData.search = match ? decodeURIComponent(match[1]).replace(/\+/g, ' ') : 'Unknown Search';
+            } else if (req.url.includes('/maps/place/')) {
+                req.userData.label = 'DETAIL';
+                // Try to extract place name if possible (optional)
+                const match = req.url.match(/\/maps\/place\/([^/@]+)/);
+                req.userData.placeName = match ? decodeURIComponent(match[1]).replace(/\+/g, ' ') : 'Unknown Place';
+            } else {
+                 log.warning(`Could not determine label for start URL: ${req.url}. Assuming DETAIL.`);
+                 req.userData.label = 'DETAIL';
             }
-            log.info(`Adding start URL: ${req.url} (Label: ${req.userData.label})`);
-            await requestQueue.addRequest(req);
+        }
+        log.info(`Adding start URL: ${req.url} (Label: ${req.userData.label})`);
+        await requestQueue.addRequest(req);
+        initialRequestCount++;
+    }
+
+    // Add Search URLs (only if no startUrls or if explicitly needed alongside)
+    // Simplified: If search terms are provided, add search requests regardless of startUrls for now.
+    // Refine this logic if you need complex coordination between startUrls and searches.
+    if (searchStringsArray.length > 0) {
+        for (const searchTerm of searchStringsArray) {
+            if (!searchTerm.trim()) continue;
+            const searchTermEncoded = encodeURIComponent(searchTerm.trim());
+            let searchUrl;
+            const userData = { label: 'SEARCH', search: searchTerm.trim(), placesFoundThisSearch: 0 };
+
+            if (customGeolocation?.coordinates?.length === 2) {
+                const [longitude, latitude] = customGeolocation.coordinates;
+                if (typeof latitude !== 'number' || typeof longitude !== 'number' || isNaN(latitude) || isNaN(longitude)) {
+                    log.error(`Invalid customGeolocation coordinates: [${longitude}, ${latitude}]`);
+                    continue; // Skip this search term
+                }
+                const radiusKm = customGeolocation.radiusKm || 5;
+                // Zoom level approximation based on radius
+                const zoom = Math.max(10, 16 - Math.floor(Math.log2(radiusKm)));
+                searchUrl = `https://www.google.com/maps/search/${searchTermEncoded}/@${latitude},${longitude},${zoom}z/data=!4m2!2m1!6e5?hl=${language}`; // Added hl and data param
+                userData.coordinates = { lat: latitude, lng: longitude };
+                userData.searchRadius = radiusKm;
+                log.info(`Adding search URL with coordinates: ${searchUrl}`);
+            } else if (searchLocation) {
+                const locationEncoded = encodeURIComponent(searchLocation);
+                searchUrl = `https://www.google.com/maps/search/${searchTermEncoded}+in+${locationEncoded}/data=!4m2!2m1!6e5?hl=${language}`;
+                userData.searchLocation = searchLocation;
+                log.info(`Adding search URL with location: ${searchUrl}`);
+            } else {
+                searchUrl = `https://www.google.com/maps/search/${searchTermEncoded}/data=!4m2!2m1!6e5?hl=${language}`;
+                log.info(`Adding search URL with only keywords: ${searchUrl}`);
+            }
+            await requestQueue.addRequest({ url: searchUrl, userData });
             initialRequestCount++;
         }
     }
 
-    // Al doilea pas: dacă avem termeni de căutare și startUrls, adaugă și căutarea
-    if (searchStringsArray.length > 0 && startUrls.length > 0) {
-        // Vom folosi coordonatele primei locații pentru căutare
-        // Acest cod este executat după ce se termină procesarea startUrls
-        log.info('Adding search tasks to be processed after initial URLs');
-        
-        // Adaugă o cerere specială care va iniția căutarea după procesarea URL-urilor inițiale
-        await requestQueue.addRequest({
-            url: startUrls[0].url || startUrls[0], 
-            userData: { 
-                label: 'EXTRACT_AND_SEARCH',
-                search: searchStringsArray.join(', '),
-                searchRadius: 5
-            }
-        });
-        initialRequestCount++;
-    } 
-    // Cazul standard când avem doar căutare fără startUrls (neschimbat)
-    else if (searchStringsArray.length > 0 && startUrls.length === 0) {
-        log.info('Generating search URL from keywords and location...');
-        const searchTermEncoded = encodeURIComponent(searchStringsArray.join(' '));
-        
-        // Verifică dacă avem coordonate specifice
-        if (customGeolocation && customGeolocation.coordinates && customGeolocation.coordinates.length === 2) {
-            // GeoJSON folosește formatul [longitude, latitude]
-            const longitude = customGeolocation.coordinates[0];
-            const latitude = customGeolocation.coordinates[1];
-
-            log.info(`DEBUG: Extracted raw coordinates from input - longitude: ${longitude}, latitude: ${latitude}`);
-
-            // Verifică dacă sunt numere valide (nu doar undefined)
-            if (typeof latitude !== 'number' || typeof longitude !== 'number' || isNaN(latitude) || isNaN(longitude)) {
-                log.error(`Invalid coordinate values: latitude=${latitude}, longitude=${longitude}`);
-                throw new Error("Invalid coordinate values");
-            }
-
-            const zoom = 15 - Math.min(Math.floor((customGeolocation.radiusKm || 5) / 2), 10);
-            
-            const searchUrl = `https://www.google.com/maps/search/${searchTermEncoded}/@${latitude},${longitude},${zoom}z`;
-            log.info(`Adding search URL with coordinates: ${searchUrl}`);
-            
-            await requestQueue.addRequest({ 
-                url: searchUrl, 
-                userData: { 
-                    label: 'SEARCH', 
-                    search: searchStringsArray.join(', '), 
-                    coordinates: { lat: latitude, lng: longitude },
-                    searchRadius: customGeolocation.radiusKm || 5
-                } 
-            });
-        } 
-        // Dacă avem o locație specificată ca text
-        else if (searchLocation) {
-            const locationEncoded = encodeURIComponent(searchLocation);
-            // Format corect: "căutare în locație"
-            const searchUrl = `https://www.google.com/maps/search/${searchTermEncoded}+in+${locationEncoded}/`;
-            log.info(`Adding search URL with location: ${searchUrl}`);
-            await requestQueue.addRequest({ 
-                url: searchUrl, 
-                userData: { label: 'SEARCH', search: searchStringsArray.join(', '), searchLocation } 
-            });
-        }
-        // Doar căutare după cuvinte cheie
-        else {
-            const searchUrl = `https://www.google.com/maps/search/${searchTermEncoded}/`;
-            log.info(`Adding search URL with only keywords: ${searchUrl}`);
-            await requestQueue.addRequest({ 
-                url: searchUrl, 
-                userData: { label: 'SEARCH', search: searchStringsArray.join(', ') } 
-            });
-        }
-        initialRequestCount++;
-    } else {
-        throw new Error('Input error: You must provide either "startUrls" or "search" parameters.');
+    if (initialRequestCount === 0) {
+        throw new Error('No valid start URLs or search parameters provided.');
     }
     log.info(`Request queue initialized with ${initialRequestCount} request(s).`);
 
-    // Counter for scraped items
-    let scrapedItemsCount = 0;
-    const state = await Apify.getValue('STATE') || { scrapedItemsCount: 0 };
-    scrapedItemsCount = state.scrapedItemsCount;
-
-    // 4. Inițializare crawler Puppeteer
+    // --- Puppeteer Crawler Initialization ---
     log.info('Initializing PuppeteerCrawler...');
     const crawler = new Apify.PuppeteerCrawler({
         requestQueue,
         proxyConfiguration,
-        maxConcurrency: 1,
-        maxRequestRetries: 3,
-        navigationTimeoutSecs: 180, // Mărește la 3 minute
-        // Eliminăm complet configurația launchContext și folosim browserPoolOptions
-        browserPoolOptions: {
-            // Configurare minimală
-            useFingerprints: false,
-            preLaunchHooks: [],
-            postLaunchHooks: [],
-            prePageCreateHooks: [],
-            postPageCreateHooks: [],
-        },
-        
-        // Eliminăm configurațiile avansate pentru moment
-        useSessionPool: false, // Dezactivăm session pool temporar
-        persistCookiesPerSession: false, // Dezactivăm persistența cookie-urilor
+        maxConcurrency: 5, // Increase concurrency for better speed with residential proxies
+        maxRequestRetries: 5, // Increase retries
+        navigationTimeoutSecs: effectiveNavigationTimeout,
+        handlePageTimeoutSecs: effectiveHandlePageTimeout,
 
-        // Restul metodelor de handler rămân la fel
-        handlePageFunction: async ({ page, request }) => {
-            const { label } = request.userData;
+        useSessionPool: true, // Enable session pool for better anti-blocking
+        persistCookiesPerSession: true, // Persist cookies
+
+        launchContext: { // Use launchContext for finer control
+            useChrome: true, // Use Chrome instead of Chromium if available in the image
+            launchOptions: {
+                headless: true, // Or false for debugging
+                args: ['--no-sandbox', '--disable-setuid-sandbox'],
+            },
+            // Use Apify's fingerprinting
+            useFingerprints: true, // IMPORTANT: Enable fingerprinting
+            // fingerprintOptions: { // Optional: Fine-tune fingerprints if needed
+            //     fingerprintGeneratorOptions: {
+            //         devices: ['desktop'],
+            //         operatingSystems: ['windows', 'linux'],
+            //     }
+            // }
+        },
+
+        // --- Page Handlers ---
+        handlePageFunction: async ({ page, request, session, browser }) => { // Add session and browser
+            const { label, ...userData } = request.userData;
             log.info(`Processing ${request.url} (Label: ${label})`);
 
-            // Check for consent screen / CAPTCHA early
+            // --- Pre-processing: Consent/Captcha ---
             try {
-                // A common selector for consent buttons
-                const consentButtonSelector = 'button[aria-label*="Accept all"], button[aria-label*="Agree"]';
-                const consentButton = await page.$(consentButtonSelector);
-                if (consentButton) {
-                    log.info('Consent screen detected, attempting to click Accept button.');
-                    await page.click(consentButtonSelector);
-                    await page.waitForTimeout(2000); // Wait for potential redirect/reload
+                // Consent button click
+                const consentButtonSelectors = [
+                    'button[aria-label*="Accept all"]',
+                    'button[aria-label*="Agree"]',
+                    'button[jsname="b3VHJd"]', // Another common consent button identifier
+                    'form[action*="consent"] button',
+                ];
+                for (const selector of consentButtonSelectors) {
+                    if (await page.$(selector)) {
+                        log.info(`Consent screen detected (selector: ${selector}), attempting to click.`);
+                        await page.click(selector);
+                        await sleep(2000 + Math.random() * 1000); // Wait for potential redirect/reload
+                        log.info('Clicked consent button.');
+                        break; // Assume one consent screen
+                    }
                 }
-                 // Add CAPTCHA detection/handling if necessary (complex, often requires external services or session rotation)
-                 const isCaptcha = await page.$('iframe[src*="recaptcha"]');
-                 if (isCaptcha) {
-                     log.warning(`CAPTCHA detected on ${request.url}. Retrying request might help.`);
-                     session.retire(); // Retire the session to get a new IP/cookies
-                     throw new Error('CAPTCHA detected');
-                 }
-
+                // CAPTCHA check
+                const isCaptcha = await page.$('iframe[src*="recaptcha"], #captcha-form');
+                if (isCaptcha) {
+                    session.retire(); // Retire session immediately
+                    throw new Error('CAPTCHA detected');
+                }
             } catch (e) {
-                 log.warning(`Error during pre-processing (consent/captcha check): ${e.message}`);
-                 // Decide if we should throw to retry or just log
-                 if (e.message.includes('CAPTCHA')) {
-                     throw e; // Throw to trigger retry with new session
-                 }
+                if (e.message.includes('CAPTCHA')) {
+                    log.warning(`CAPTCHA detected on ${request.url}. Retiring session and retrying.`);
+                    throw e; // Throw to trigger retry
+                }
+                log.warning(`Error during pre-processing (consent/captcha): ${e.message}`);
             }
 
-
+            // --- Label-Specific Logic ---
             if (label === 'SEARCH') {
-                log.info(`Processing search results for: "${request.userData.search}" in ${request.userData.searchLocation || 'specified area'}...`);
+                log.info(`Processing search results for: "${userData.search}"...`);
 
-                // Wait for results container, more robust selectors
+                // Wait for results container
+                const resultsSelector = 'div[role="feed"]'; // Primary container
                 try {
-                    // Adaugă un delay pentru încărcarea completă a paginii
-                    await page.waitForTimeout(5000);
-                    
-                    // Încercăm mai mulți selectori folosiți de Google Maps
-                    const possibleSelectors = [
-                        'div[role="feed"] > div > div[role="article"]',
-                        'div.section-result',
-                        'div.gm2-headline-5',
-                        'div.fontHeadlineSmall',
-                        'div.Nv2PK',
-                        'a[href*="/maps/place/"]'
-                    ];
-                    
-                    // Verifică dacă există vreun rezultat vizibil
-                    let resultsFound = false;
-                    let usedSelector = '';
-                    
-                    for (const selector of possibleSelectors) {
-                        const exists = await page.$(selector);
-                        if (exists) {
-                            log.info(`Found search results using selector: ${selector}`);
-                            resultsFound = true;
-                            usedSelector = selector;
-                            break;
-                        }
-                    }
-                    
-                    if (!resultsFound) {
-                        log.warning('Could not find any search results using known selectors.');
-                        
-                        // Salvează screenshot pentru debugging
-                        await page.screenshot({ path: 'search-results-debug.png', fullPage: true });
-                        
-                        // Verifică dacă există mesaj "No results found"
-                        const pageContent = await page.content();
-                        const noResultsText = await page.evaluate(() => {
-                            return document.body.innerText.includes('No results found') || 
-                                   document.body.innerText.includes('Nu s-au găsit rezultate');
-                        });
-                        
-                        if (noResultsText) {
-                            log.info('Page shows "No results found" message.');
-                            return; // Exit early
-                        } else {
-                            log.error('Unknown page structure. Debug info follows:');
-                            const debugInfo = await page.evaluate(() => ({
-                                title: document.title,
-                                url: window.location.href,
-                                bodyText: document.body.innerText.substring(0, 1000)
-                            }));
-                            log.info('Page debug info:', debugInfo);
-                            throw new Error('Cannot process search results: Unknown page structure');
-                        }
-                    }
-                    
-                    // Continua cu procesarea rezultatelor folosind selectorul găsit
-                    const resultsSelector = usedSelector;
-                    
-                    // Scroll down to load more results (basic implementation)
-                    // A more robust implementation would check scroll height and loop
-                    await page.evaluate(async () => {
-                        const feed = document.querySelector('div[role="feed"]');
-                        if (feed) {
-                            for (let i = 0; i < 5; i++) { // Scroll down a few times
-                                feed.scrollTop = feed.scrollHeight;
-                                await new Promise(resolve => setTimeout(resolve, 1000)); // Wait for load
-                            }
-                        }
-                    });
-                    log.info('Scrolled down search results page.');
-
-
-                    // Extragere rezultate folosind DOM cu debug
-                    const places = await page.evaluate(() => {
-                        const results = [];
-                        
-                        // 1. Încercăm să găsim containerul principal de rezultate
-                        const resultContainer = document.querySelector('div[role="feed"]');
-                        if (!resultContainer) {
-                            console.error('Feed container not found');
-                            return results;
-                        }
-                        
-                        // 2. Găsim toate articolele (rezultatele) din container
-                        // Încercăm multiple selectoare pentru a găsi rezultatele
-                        const resultSelectors = [
-                            'div[role="article"]',
-                            'a[href*="/maps/place/"]',  // Link-uri directe către locații
-                            '.Nv2PK'                   // Clasa comună pentru rezultate în Google Maps
-                        ];
-                        
-                        let placeElements = [];
-                        // Testăm fiecare selector până găsim unul care returnează rezultate
-                        for (const selector of resultSelectors) {
-                            const elements = resultContainer.querySelectorAll(selector);
-                            if (elements && elements.length > 0) {
-                                console.log(`Found ${elements.length} results using selector ${selector}`);
-                                placeElements = Array.from(elements);
-                                break;
-                            }
-                        }
-                        
-                        console.log(`Total place elements found: ${placeElements.length}`);
-                        
-                        // 3. Procesăm fiecare element găsit pentru a extrage informațiile
-                        placeElements.forEach((el, index) => {
-                            try {
-                                // Găsim link-ul către locație
-                                let linkElement = null;
-                                
-                                // Dacă elementul este deja un link
-                                if (el.tagName === 'A' && el.href && el.href.includes('/maps/place/')) {
-                                    linkElement = el;
-                                } else {
-                                    // Altfel, căutăm link-uri în interior
-                                    linkElement = el.querySelector('a[href*="/maps/place/"]');
-                                }
-                                
-                                if (!linkElement || !linkElement.href) {
-                                    // Adăugăm o logică de fallback pentru a găsi link-uri
-                                    const allLinks = el.querySelectorAll('a[href*="/maps/"]');
-                                    for (const link of allLinks) {
-                                        if (link.href.includes('/maps/place/') || link.href.includes('/maps/search/')) {
-                                            linkElement = link;
-                                            break;
-                                        }
-                                    }
-                                }
-                                
-                                // Dacă am găsit un link valid
-                                if (linkElement && linkElement.href) {
-                                    // Găsește titlul (numele afacerii)
-                                    let title = null;
-                                    
-                                    // Încercăm diferite metode pentru a găsi titlul
-                                    // Metoda 1: Element cu clasa fontHeadlineSmall
-                                    const headlineEl = el.querySelector('.fontHeadlineSmall');
-                                    if (headlineEl) {
-                                        title = headlineEl.textContent.trim();
-                                    }
-                                    
-                                    // Metoda 2: Element cu aria-label pentru numele afacerii
-                                    if (!title) {
-                                        const nameEl = el.querySelector('[aria-label]');
-                                        if (nameEl) {
-                                            title = nameEl.getAttribute('aria-label').trim();
-                                        }
-                                    }
-                                    
-                                    // Metoda 3: Primul element h3 sau div puternic stilizat
-                                    if (!title) {
-                                        const possibleTitleEl = el.querySelector('h3, div.fontTitleLarge, div.gm2-headline-5');
-                                        if (possibleTitleEl) {
-                                            title = possibleTitleEl.textContent.trim();
-                                        }
-                                    }
-                                    
-                                    // Fallback: Folosim numele din URL
-                                    if (!title) {
-                                        const urlParts = linkElement.href.split('/');
-                                        const nameFromUrl = urlParts[urlParts.indexOf('place') + 1];
-                                        if (nameFromUrl) {
-                                            title = decodeURIComponent(nameFromUrl).replace(/\+/g, ' ');
-                                        }
-                                    }
-                                    
-                                    // Setăm cel puțin un titlu generic dacă nu am putut găsi unul specific
-                                    title = title || `Place Result ${index + 1}`;
-                                    
-                                    // Extragem Place ID din URL dacă este posibil
-                                    let placeId = null;
-                                    const placeIdMatch = linkElement.href.match(/!1s([^!]+)/);
-                                    if (placeIdMatch && placeIdMatch[1]) {
-                                        placeId = placeIdMatch[1];
-                                    }
-                                    
-                                    // Adăugăm rezultatul la listă
-                                    results.push({ 
-                                        title, 
-                                        url: linkElement.href, 
-                                        placeId,
-                                        index
-                                    });
-                                    console.log(`Added result #${index + 1}: ${title}`);
-                                }
-                            } catch (error) {
-                                console.error(`Error processing result #${index + 1}: ${error.message}`);
-                            }
-                        });
-                        
-                        console.log(`Returning ${results.length} extracted places`);
-                        return results;
-                    });
-
-                    log.info(`Found ${places.length} potential places on the current page.`);
-                    if (places.length === 0) {
-                        // Salvăm un screenshot pentru debugging
-                        await page.screenshot({ path: './screenshots/search-results-debug.png', fullPage: true });
-                        log.warning('No place URLs extracted from the search results page. Check selectors.');
-                        
-                        // Adăugăm informații detaliate pentru debug
-                        const pageDebugInfo = await page.evaluate(() => {
-                            return {
-                                title: document.title,
-                                url: window.location.href,
-                                hasFeed: !!document.querySelector('div[role="feed"]'),
-                                hasArticles: document.querySelectorAll('div[role="article"]').length,
-                                visibleText: document.body.innerText.substring(0, 1000),
-                                linksCount: document.querySelectorAll('a[href*="/maps/place/"]').length
-                            };
-                        });
-                        log.info('Page debug info:', pageDebugInfo);
-                    }
-
-                    let enqueuedCount = 0;
-                    for (const place of places) {
-                        // Check maxItems limit before enqueueing
-                        if (maxCrawledPlaces > 0 && scrapedItemsCount + enqueuedCount >= maxCrawledPlaces) {
-                            log.info(`maxItems limit (${maxCrawledPlaces}) reached. Stopping enqueueing.`);
-                            break;
-                        }
-                         // Check maxCost limit (simplified check)
-                         if (maxCostPerRun > 0) {
-                             const estimatedCost = 0.007 + (scrapedItemsCount + enqueuedCount) * 0.004; // Base + per place cost
-                             if (estimatedCost >= maxCostPerRun) {
-                                 log.info(`Estimated cost ($${estimatedCost.toFixed(3)}) reached maxCostPerRun ($${maxCostPerRun}). Stopping enqueueing.`);
-                                 break;
-                             }
-                         }
-
-                        if (place.url) {
-                            // Check if URL already processed or enqueued to avoid duplicates
-                            // Note: Apify's RequestQueue handles this automatically if keepUrlFragment is false (default)
-                            await requestQueue.addRequest({
-                                url: place.url,
-                                userData: { label: 'DETAIL', placeName: place.title || placeId || 'Unknown Place' }
-                            });
-                            enqueuedCount++;
-                        }
-                    }
-                    log.info(`Enqueued ${enqueuedCount} detail page requests.`);
-
-                    // Check if we need to paginate (find next page button)
-                    // Pagination logic is complex on Maps, often infinite scroll is used.
-                    // The scrolling implemented above is a basic form. A robust solution
-                    // might need to detect the end of results or handle explicit "Next" buttons if they appear.
-
-
+                    await page.waitForSelector(resultsSelector, { timeout: 20000 });
                 } catch (e) {
-                    log.error(`Error processing search page: ${e.message}`);
-                    throw e;
-                }
-
-            } else if (label === 'EXTRACT_AND_SEARCH') {
-                // Așteaptă încărcarea paginii și extrage coordonatele
-                await page.waitForSelector('h1', { timeout: 20000 }).catch(() => {
-                    log.warning('Timeout waiting for h1 element - page might not have loaded properly');
-                });
-
-                // Extrage coordonatele din pagină
-                const coordinates = await page.evaluate(() => {
-                    try {
-                        // Metodă 1: Caută în URL
-                        const urlMatch = window.location.href.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
-                        if (urlMatch && urlMatch.length >= 3) {
-                            return {
-                                lat: parseFloat(urlMatch[1]),
-                                lng: parseFloat(urlMatch[2])
-                            };
+                    // Fallback selectors or error handling
+                    const fallbackSelector = 'a[href*="/maps/place/"]';
+                    if (await page.$(fallbackSelector)) {
+                        log.warning(`Primary results selector '${resultsSelector}' not found, but found place links. Proceeding cautiously.`);
+                    } else {
+                        const pageContent = await page.content();
+                        if (pageContent.includes('No results found') || pageContent.includes('Nu s-au găsit rezultate')) {
+                            log.info(`'No results found' for search: "${userData.search}"`);
+                            return; // No results, nothing more to do
                         }
-                        
-                        // Restul metodelor de extragere a coordonatelor
-                        // ... (codul existent pentru extragerea coordonatelor)
-                        
-                        return { lat: 0, lng: 0 }; // fallback
-                    } catch (e) {
-                        console.error('Error extracting coordinates:', e);
-                        return { lat: 0, lng: 0 };
+                        await Apify.setValue(`ERROR_SEARCH_PAGE_${Date.now()}`, pageContent, { contentType: 'text/html' });
+                        throw new Error(`Could not find search results container ('${resultsSelector}') or fallback links.`);
                     }
-                });
-
-                if (coordinates.lat !== 0 && coordinates.lng !== 0) {
-                    log.info(`Extracted coordinates for search: ${coordinates.lat}, ${coordinates.lng}`);
-                    
-                    // Construiește URL-ul de căutare în apropierea acestor coordonate
-                    const searchTermEncoded = encodeURIComponent(request.userData.search);
-                    const searchRadius = request.userData.searchRadius || 5;
-                    const zoom = 15 - Math.min(Math.floor(searchRadius / 2), 10); // Zoom level based on radius
-                    
-                    const searchUrl = `https://www.google.com/maps/search/${searchTermEncoded}/@${coordinates.lat},${coordinates.lng},${zoom}z`;
-                    log.info(`Adding search URL with coordinates: ${searchUrl}`);
-                    
-                    await requestQueue.addRequest({ 
-                        url: searchUrl, 
-                        userData: { 
-                            label: 'SEARCH', 
-                            search: request.userData.search, 
-                            coordinates: coordinates,
-                            searchRadius: searchRadius
-                        } 
-                    });
-                } else {
-                    log.warning('Could not extract coordinates from the page. Search around this location skipped.');
                 }
+
+                // Perform infinite scroll
+                await infiniteScroll(page, resultsSelector, costOptimizedMode ? 5 : 25); // Limit scrolls in cost mode
+
+                // Extract place URLs from search results
+                const placeLinks = await page.evaluate((resultsSel) => {
+                    const links = new Set();
+                    // Prioritize links within the feed articles
+                    document.querySelectorAll(`${resultsSel} div[role="article"] a[href*="/maps/place/"]`)
+                        .forEach(el => links.add(el.href));
+                    // Fallback: any place link within the feed
+                    if (links.size === 0) {
+                        document.querySelectorAll(`${resultsSel} a[href*="/maps/place/"]`)
+                            .forEach(el => links.add(el.href));
+                    }
+                    // Fallback: any place link on the page (less reliable)
+                     if (links.size === 0) {
+                         document.querySelectorAll(`a[href*="/maps/place/"]`)
+                             .forEach(el => links.add(el.href));
+                     }
+                    return Array.from(links);
+                }, resultsSelector);
+
+                log.info(`Found ${placeLinks.length} unique place links.`);
+
+                let enqueuedCount = 0;
+                let placesFoundThisSearch = userData.placesFoundThisSearch || 0;
+
+                for (const url of placeLinks) {
+                    // Check total limit
+                    if (maxCrawledPlaces > 0 && scrapedItemsCount >= maxCrawledPlaces) {
+                        log.info(`Total place limit (${maxCrawledPlaces}) reached. Stopping search.`);
+                        break;
+                    }
+                    // Check limit for this specific search term
+                    if (maxCrawledPlacesPerSearch > 0 && placesFoundThisSearch >= maxCrawledPlacesPerSearch) {
+                        log.info(`Limit per search (${maxCrawledPlacesPerSearch}) reached for "${userData.search}". Stopping.`);
+                        break;
+                    }
+                    // Check cost limit
+                    if (!costEstimator.checkBudget()) {
+                        log.warning(`Budget limit reached. Stopping actor.`);
+                        // Optionally, you could just stop adding requests instead of exiting the whole actor
+                        // For now, let's rely on the check before adding the request
+                        break;
+                    }
+
+                    // Add language parameter to detail URL
+                    const detailUrl = new URL(url);
+                    detailUrl.searchParams.set('hl', language);
+
+                    if (costEstimator.checkBudget()) { // Double check before adding
+                        await requestQueue.addRequest({
+                            url: detailUrl.href,
+                            userData: {
+                                label: 'DETAIL',
+                                // Attempt to get name from link text if possible (very basic)
+                                placeName: `Place from search: ${userData.search}`,
+                                searchTerms: userData.search, // Pass search terms for context
+                            }
+                        });
+                        enqueuedCount++;
+                        placesFoundThisSearch++;
+                    } else {
+                         log.warning(`Budget limit reached just before adding request for ${url}. Stopping.`);
+                         break;
+                    }
+                }
+                log.info(`Enqueued ${enqueuedCount} detail page requests for search "${userData.search}". Total found this search: ${placesFoundThisSearch}`);
+
             } else if (label === 'DETAIL') {
-                try {
-                    log.info(`▶️ Extracting details for: ${request.userData.placeName} from ${request.url}`);
-                    
-                    // Inițializează obiectul placeData la începutul blocului
-                    const placeData = {
-                        scrapedUrl: request.url,
-                        name: request.userData.placeName || 'Unknown Place',
-                        category: null,
-                        address: null,
-                        phone: null,
-                        website: null,
-                        googleUrl: request.url,
-                        placeId: null,
-                        coordinates: { lat: null, lng: null },
-                        openingHoursStatus: null,
-                        openingHours: null,
-                        plusCode: null,
-                        status: 'Operational',
-                        imageUrls: [],
-                        reviews: [],
-                        email: null,
-                        socialProfiles: {}
+                // Check budget before processing detail page
+                if (!costEstimator.addPlace()) { // Increment place count and check budget
+                    log.warning(`Budget limit reached before processing detail page ${request.url}. Skipping.`);
+                    return;
+                }
+
+                log.info(`▶️ Extracting details for: ${userData.placeName || request.url}`);
+                await randomDelay(500, 1500); // Small delay before extraction
+
+                // --- Extract Core Data ---
+                const extractedData = await page.evaluate(() => {
+                    const getText = (selector) => document.querySelector(selector)?.textContent.trim() || null;
+                    const getAttribute = (selector, attr) => document.querySelector(selector)?.getAttribute(attr) || null;
+
+                    const placeName = getText('h1') || getText('.DUwDvf'); // Common selectors for name
+                    const mainCategory = getText('button[jsaction*="category"]'); // Main category button
+                    const address = getText('button[data-item-id="address"]')?.replace(/^.*?\s/, '') || getText('[data-tooltip*="address"]')?.replace(/^.*?\s/, ''); // Clean address icon text
+                    const phone = getText('button[data-item-id="phone"]')?.replace(/^.*?\s/, '') || getText('[data-tooltip*="phone"]')?.replace(/^.*?\s/, ''); // Clean phone icon text
+                    const website = getAttribute('a[data-item-id="authority"]', 'href') || getAttribute('a[aria-label*="Website"]', 'href');
+                    const plusCode = getText('button[data-item-id="plus_code"]')?.replace(/^.*?\s/, '') || getText('[data-tooltip*="Plus code"]')?.replace(/^.*?\s/, '');
+                    const statusText = getText('.JZ9JDb') || getText('.mgr77e'); // Status like "Permanently closed"
+
+                    // Coordinates from URL (fallback)
+                    let lat = null, lng = null;
+                    const urlMatch = window.location.href.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/;
+                    if (urlMatch) {
+                        lat = parseFloat(urlMatch[1]);
+                        lng = parseFloat(urlMatch[2]);
+                    }
+
+                    // Opening hours status (icon text)
+                    const hoursIcon = document.querySelector('.OMl5r.hH0dDd'); // Selector for the clock icon area
+                    const openingHoursStatus = hoursIcon?.getAttribute('aria-label') || null;
+
+                    return {
+                        name: placeName,
+                        category: mainCategory,
+                        address: address,
+                        phone: phone,
+                        website: website,
+                        plusCode: plusCode,
+                        statusText: statusText,
+                        coordinates: (lat && lng) ? { lat, lng } : null,
+                        openingHoursStatus: openingHoursStatus,
                     };
-                    
-                    // Extrage ID-ul locației din URL
-                    try {
-                        const placeIdMatch = request.url.match(/!1s([^!]+)/);
-                        if (placeIdMatch && placeIdMatch[1]) {
-                            placeData.placeId = placeIdMatch[1];
-                        }
-                    } catch (error) {
-                        log.warning(`Could not extract place ID from URL: ${error.message}`);
-                    }
-                    
-                    // Extrage coordonatele
-                    try {
-                        const coordsMatch = request.url.match(/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/);
-                        if (coordsMatch && coordsMatch.length === 3) {
-                            placeData.coordinates = {
-                                lat: parseFloat(coordsMatch[1]),
-                                lng: parseFloat(coordsMatch[2])
-                            };
-                        }
-                    } catch (error) {
-                        log.warning(`Could not extract coordinates from URL: ${error.message}`);
-                    }
-                    
-                    // Extrage numele, categoria, adresa, telefonul, website-ul
-                    const basicDetails = await page.evaluate(() => {
-                        const details = {};
-                        
-                        // Selectori multipli pentru nume
-                        const nameSelectors = [
-                            'h1.fontHeadlineLarge',
-                            'h1[class*="fontHeadline"]',
-                            'div[role="main"] h1',
-                            'div.tTVLSc h1',
-                            'div[class*="title"] h1',
-                            'div.lMbq3e h1',
-                            'h1'
-                        ];
-                        
-                        for (const selector of nameSelectors) {
-                            const element = document.querySelector(selector);
-                            if (element && element.textContent.trim()) {
-                                details.name = element.textContent.trim();
-                                break;
-                            }
-                        }
-                        
-                        // Backup pentru nume - folosim numele din titlul paginii
-                        if (!details.name) {
-                            const title = document.title;
-                            if (title) {
-                                const titleParts = title.split(' - ');
-                                if (titleParts.length > 0) {
-                                    details.name = titleParts[0].trim();
-                                }
-                            }
-                        }
-                        
-                        // Selectori multipli pentru categorie
-                        const categorySelectors = [
-                            'button[jsaction*="pane.rating.category"]',
-                            'button[jsaction*="category"]',
-                            'span[jstcache="645"]',
-                            'span.DkEaL',
-                            'div.R4H8Rd',
-                            'div[jsaction*="category"]'
-                        ];
-                        
-                        for (const selector of categorySelectors) {
-                            const element = document.querySelector(selector);
-                            if (element && element.textContent.trim()) {
-                                details.category = element.textContent.trim();
-                                break;
-                            }
-                        }
-                        
-                        // Adresa
-                        const addressSelectors = [
-                            'button[data-item-id*="address"]',
-                            'button[aria-label*="Address"]',
-                            'button[aria-label*="address"]'
-                        ];
-                        for (const selector of addressSelectors) {
-                            const element = document.querySelector(selector);
-                            if (element && element.textContent.trim()) {
-                                details.address = element.textContent.trim();
-                                break;
-                            }
-                        }
-                        
-                        // Telefon
-                        const phoneSelectors = [
-                            'button[data-item-id*="phone"]',
-                            'button[aria-label*="Phone"]',
-                            'button[aria-label*="phone"]',
-                            '[data-tooltip="Copy phone number"]'
-                        ];
-                        for (const selector of phoneSelectors) {
-                            const element = document.querySelector(selector);
-                            if (element && element.textContent.trim()) {
-                                details.phone = element.textContent.trim();
-                                break;
-                            }
-                        }
-                        
-                        // Website
-                        const websiteSelectors = [
-                            'a[data-item-id*="authority"]',
-                            'a[aria-label*="website"]',
-                            'a[href*="http"]:not([href*="google"])'
-                        ];
-                        for (const selector of websiteSelectors) {
-                            const element = document.querySelector(selector);
-                            if (element && element.href) {
-                                details.website = element.href;
-                                break;
-                            }
-                        }
-                        
-                        return details;
-                    });
+                });
 
-                    // Adaugă debugging pentru a verifica ce s-a extras
-                    log.info(`Extracted basic details: name=${basicDetails.name}, category=${basicDetails.category}`);
+                // --- Populate placeData ---
+                const placeData = {
+                    scrapedUrl: request.url,
+                    name: extractedData.name || userData.placeName, // Use extracted name if available
+                    category: extractedData.category,
+                    address: extractedData.address,
+                    phone: extractedData.phone,
+                    website: extractedData.website,
+                    googleUrl: request.url,
+                    placeId: request.url.match(/!1s(0x[a-f0-9]+:[a-f0-9]+)/)?.[1] || null, // Extract Place ID
+                    coordinates: extractedData.coordinates,
+                    openingHoursStatus: extractedData.openingHoursStatus,
+                    openingHours: null, // To be extracted later if needed
+                    plusCode: extractedData.plusCode,
+                    status: extractedData.statusText?.toLowerCase().includes('permanently closed') ? 'Permanently closed' : 'Operational', // Determine status
+                    imageUrls: [],
+                    reviews: [],
+                    email: null,
+                    socialProfiles: {},
+                    searchTerms: userData.searchTerms || null, // Include search terms if available
+                    timestamp: new Date().toISOString(), // Add timestamp
+                    _error: null, // Placeholder for errors during sub-extractions
+                };
 
-                    // Adaugă obiectul basicDetails la placeData
-                    Object.assign(placeData, basicDetails);
-                    
-                    // Extrage programul de funcționare cu metode multiple
-                    const openingHours = await page.evaluate(() => {
+                // --- Conditional Skipping ---
+                if (skipClosedPlaces && placeData.status === 'Permanently closed') {
+                    log.info(`Skipping permanently closed place: ${placeData.name}`);
+                    return; // Stop processing this place
+                }
+
+                // --- Extract Opening Hours (if needed) ---
+                // Add logic here if opening hours details are required (clicking the hours section)
+                // Example (simplified):
+                // if (scrapePlaceDetailPage) {
+                //     try {
+                //         const hoursButton = await page.$('button[jsaction*="pane.openhours"]');
+                //         if (hoursButton) {
+                //             await hoursButton.click();
+                //             await page.waitForSelector('.y0A6Dd'); // Wait for hours table
+                //             placeData.openingHours = await page.evaluate(() => { /* ... extraction logic ... */ });
+                //         }
+                //     } catch(e) { log.warning(`Could not extract opening hours: ${e.message}`); }
+                // }
+
+
+                // --- Extract Images (if needed) ---
+                if (scrapePlaceDetailPage && effectiveMaxImages > 0) {
+                    if (!costEstimator.addDetails()) { // Increment details cost and check budget
+                        log.warning(`Budget limit reached before extracting images for ${placeData.name}. Skipping.`);
+                    } else {
+                        log.info(`Extracting up to ${effectiveMaxImages} images...`);
                         try {
-                            // Mai întâi, încearcă să găsim butonul de orar și să-l apăsăm
-                            const hourSelectors = [
-                                'button[data-item-id*="oh"]', 
-                                'button[aria-label*="hour"]',
-                                'button[aria-label*="Hours"]',
-                                'div[data-info-status]',
-                                'button[jsaction*="hours"]'
+                            // Simple extraction from thumbnails visible on the page
+                            const imageUrls = await page.evaluate((max) => {
+                                const urls = new Set();
+                                document.querySelectorAll('button[jsaction*="pane.heroHeaderImage.click"] img[src*="googleusercontent"]')
+                                    .forEach(img => {
+                                        if (urls.size < max && img.src) {
+                                            // Try to get higher resolution URL
+                                            urls.add(img.src.replace(/=w\d+-h\d+/, '=w1024-h768'));
+                                        }
+                                    });
+                                return Array.from(urls);
+                            }, effectiveMaxImages);
+                            placeData.imageUrls = imageUrls;
+                            log.info(`Extracted ${placeData.imageUrls.length} images.`);
+                        } catch (e) {
+                            log.warning(`Failed to extract images: ${e.message}`);
+                            placeData._error = (placeData._error ? placeData._error + '; ' : '') + `Image extraction failed: ${e.message}`;
+                        }
+                    }
+                }
+
+                // --- Extract Reviews (if needed) ---
+                if (scrapePlaceDetailPage && effectiveMaxReviews > 0) {
+                     if (!costEstimator.addDetails()) { // Increment details cost again
+                         log.warning(`Budget limit reached before extracting reviews for ${placeData.name}. Skipping.`);
+                     } else {
+                        log.info(`Extracting up to ${effectiveMaxReviews} reviews (sorted by ${reviewsSort})...`);
+                        try {
+                            // Click the reviews tab/button
+                            const reviewButtonSelectors = [
+                                'button[jsaction*="pane.rating.moreReviews"]', // "More reviews" button
+                                'button[jsaction*="pane.reviewChart.moreReviews"]',
+                                'button[aria-label*="Reviews"]', // General reviews button/tab
                             ];
-                            
-                            let hoursButton = null;
-                            for (const selector of hourSelectors) {
-                                const button = document.querySelector(selector);
-                                if (button) {
-                                    hoursButton = button;
+                            let reviewButtonClicked = false;
+                            for (const selector of reviewButtonSelectors) {
+                                if (await page.$(selector)) {
+                                    await page.click(selector);
+                                    await sleep(1500 + Math.random() * 1000); // Wait for reviews to load
+                                    reviewButtonClicked = true;
+                                    log.debug(`Clicked reviews button: ${selector}`);
                                     break;
                                 }
                             }
-                            
-                            // Dacă găsim buton de orar, extragem status-ul inițial
-                            if (hoursButton) {
-                                const statusText = hoursButton.textContent.trim();
-                                
-                                // Încercăm să facem click pentru a deschide panoul complet cu ore (dacă nu e deja deschis)
-                                try {
-                                    hoursButton.click();
-                                    // Așteaptă să se încarce panoul
-                                    setTimeout(() => {}, 1000);
-                                } catch (clickErr) {
-                                    console.error('Could not click hours button', clickErr);
-                                }
-                                
-                                // După click, căutăm tabelul cu program
-                                const scheduleSelectors = [
-                                    'table[class*="eK4R0e"] tr',
-                                    'table tr',
-                                    'div[role="dialog"] tr',
-                                    'div[aria-label*="hour"] tr',
-                                    'div[jsaction*="pane.openhours"] tr'
-                                ];
-                                
-                                let scheduleElements = [];
-                                for (const selector of scheduleSelectors) {
-                                    const elements = document.querySelectorAll(selector);
-                                    if (elements && elements.length > 0) {
-                                        scheduleElements = Array.from(elements);
-                                        break;
-                                    }
-                                }
-                                
-                                let fullSchedule = null;
-                                if (scheduleElements.length > 0) {
-                                    fullSchedule = scheduleElements.map(row => {
-                                        const cells = row.querySelectorAll('td');
-                                        if (cells.length >= 2) {
-                                            return {
-                                                day: cells[0].textContent.trim(),
-                                                hours: cells[1].textContent.trim()
-                                            };
-                                        } else {
-                                            const text = row.textContent.trim();
-                                            const dayMatch = text.match(/([A-Za-z]+):\s*(.*)/);
-                                            if (dayMatch) {
-                                                return {
-                                                    day: dayMatch[1],
-                                                    hours: dayMatch[2]
-                                                };
-                                            }
-                                        }
-                                        return null;
-                                    }).filter(Boolean);
-                                }
-                                
-                                return {
-                                    status: statusText,
-                                    fullSchedule
-                                };
-                            }
-                            
-                            // Dacă nu găsim buton specific, căutăm orice text care ar putea indica programul
-                            const statusElements = document.querySelectorAll('[aria-label*="Open"], [aria-label*="Closed"], [data-info-status]');
-                            for (const el of statusElements) {
-                                const text = el.textContent.trim();
-                                if (text && (text.includes('Open') || text.includes('Closed'))) {
-                                    return {
-                                        status: text,
-                                        fullSchedule: null
-                                    };
-                                }
-                            }
-                            
-                            return null;
-                        } catch (e) {
-                            console.error('Error extracting opening hours:', e);
-                            return null;
-                        }
-                    });
 
-                    if (openingHours) {
-                        placeData.openingHoursStatus = openingHours.status;
-                        placeData.openingHours = openingHours.fullSchedule;
-                        log.info(`Extracted opening hours: status=${openingHours.status}, schedule=${openingHours.fullSchedule ? 'yes' : 'no'}`);
-                    } else {
-                        log.info(`No opening hours found for this place`);
-                    }
-                    
-                    // Extrage Plus Code
-                    const plusCode = await page.evaluate(() => {
-                        try {
-                            // Caută după element ce conține plus code
-                            const plusCodeElements = document.querySelectorAll('button[data-item-id*="oloc"]');
-                            return plusCodeElements.length > 0 ? plusCodeElements[0].textContent.trim() : null;
-                        } catch (e) {
-                            console.error('Error extracting plus code:', e);
-                            return null;
-                        }
-                    });
-                    
-                    placeData.plusCode = plusCode;
-                    
-                    // Extrage imagini - imbunatatit
-                    const imageExtractionCode = async () => {
-                        try {
-                            // Forțăm extragerea imaginilor indiferent de valoarea maxImages
-                            const maxImagesToExtract = input.maxImages || 5; // Folosim 5 ca valoare implicită
-                            log.info(`Attempting to extract up to ${maxImagesToExtract} images...`);
-                            
-                            // Pasul 1: Găsește toate imaginile direct din DOM pentru eficiență
-                            let extractedImageUrls = await page.evaluate(() => {
-                                const imgUrls = [];
-                                
-                                // Găsește toate imaginile din pagină - selectori îmbunătățiți
-                                const allImages = [
-                                    ...document.querySelectorAll('img[src*="googleusercontent"]'),
-                                    ...document.querySelectorAll('img[data-src*="googleusercontent"]'),
-                                    ...document.querySelectorAll('img[srcset*="googleusercontent"]'),
-                                    ...document.querySelectorAll('button[jsaction*="pane.heroHeaderImage"] img')
-                                ];
-                                
-                                // Extrage URL-urile de imagini și elimină duplicatele
-                                allImages.forEach(img => {
-                                    const src = img.src || img.getAttribute('data-src') || '';
-                                    if (src && src.includes('googleusercontent')) {
-                                        // Optimizare: Înlocuiește cu URL-ul la rezoluție mare
-                                        const highResUrl = src.replace(/=w\d+-h\d+/, '=w1200-h1200');
-                                        if (!imgUrls.includes(highResUrl)) {
-                                            imgUrls.push(highResUrl);
+                            if (reviewButtonClicked) {
+                                // Optional: Apply sorting (requires clicking sort dropdown)
+                                // Add logic here if sorting is needed based on `reviewsSort`
+
+                                // Scroll within the reviews feed
+                                const reviewFeedSelector = 'div[role="feed"][aria-label*="Reviews"], div.m6QErb[aria-label*="Reviews"]'; // Common review feed selectors
+                                await infiniteScroll(page, reviewFeedSelector, costOptimizedMode ? 2 : 5); // Limit scrolls
+
+                                // Extract reviews
+                                placeData.reviews = await page.evaluate((max, feedSelector) => {
+                                    const reviews = [];
+                                    const reviewElements = document.querySelectorAll(`${feedSelector} div[jsaction*="mouseover:pane.review.in"]`); // Selector for individual review blocks
+                                    reviewElements.forEach(el => {
+                                        if (reviews.length >= max) return;
+                                        const authorName = el.querySelector('.d4r55')?.textContent.trim();
+                                        const ratingText = el.querySelector('.kvMYJc [aria-label*="stars"]')?.getAttribute('aria-label');
+                                        const rating = ratingText ? parseFloat(ratingText) : null;
+                                        const dateText = el.querySelector('.rsqaWe')?.textContent.trim();
+                                        // Expand review text if needed
+                                        const moreButton = el.querySelector('button[jsaction="click:TiglPc"]');
+                                        if (moreButton) moreButton.click(); // Click "More" button
+                                        const reviewText = el.querySelector('.wiI7pd')?.textContent.trim();
+
+                                        if (authorName && rating !== null && dateText && reviewText) {
+                                            reviews.push({ authorName, rating, date: dateText, text: reviewText });
                                         }
-                                    }
-                                });
-                                
-                                return imgUrls;
-                            });
-                            
-                            if (extractedImageUrls.length > 0) {
-                                log.info(`Found ${extractedImageUrls.length} images directly in the page`);
-                            } else {
-                                log.info(`No images found directly in the page. Trying to open gallery...`);
-                            }
-                            
-                            // Pasul 2: Dacă nu găsim imagini direct, încercăm să deschidem galeria
-                            if (extractedImageUrls.length === 0) {
-                                // Lista de selectori pentru butoanele de galerie - îmbunătățită
-                                const galleryButtonSelectors = [
-                                    'button[data-item-id*="image"]',
-                                    'button[jsaction*="photo"]',
-                                    'button[jsaction*="image"]', 
-                                    'button[aria-label*="photo"]',
-                                    'img.Cur7sb',
-                                    'div[style*="background-image"]',
-                                    'div[data-photo-index="0"]',
-                                    'div.RZ66Rb img',
-                                    'button[aria-label*="View all photos"]'
-                                ];
-                                
-                                // Debug - afișează dacă găsim vreun buton de galerie
-                                for (const selector of galleryButtonSelectors) {
-                                    const hasButton = await page.$(selector);
-                                    if (hasButton) {
-                                        log.info(`Found gallery button with selector: ${selector}`);
-                                    }
-                                }
-                                
-                                // Încearcă să deschidă galeria
-                                let galleryOpened = false;
-                                for (const selector of galleryButtonSelectors) {
-                                    const hasButton = await page.$(selector);
-                                    if (hasButton) {
-                                        try {
-                                            log.info(`Clicking gallery button with selector: ${selector}`);
-                                            await page.click(selector);
-                                            
-                                            // Așteaptă să se deschidă
-                                            await page.waitForSelector([
-                                                'div[data-photo-index]',
-                                                'img[src*="googleusercontent"][srcset]',
-                                                'div.gallery-image-high-res',
-                                                'div[data-thumbnail-index]'
-                                            ].join(', '), { timeout: 5000 });
-                                            
-                                            galleryOpened = true;
-                                            log.info(`Gallery opened successfully using ${selector}`);
-                                            
-                                            // Așteaptă încărcarea completă
-                                            await page.waitForTimeout(2000);
-                                            break;
-                                        } catch (err) {
-                                            log.info(`Failed to open gallery with selector ${selector}: ${err.message}`);
-                                        }
-                                    }
-                                }
-                                
-                                // Extrage URL-urile din galerie, dacă s-a deschis
-                                if (galleryOpened) {
-                                    extractedImageUrls = await page.evaluate(() => {
-                                        const imgUrls = [];
-                                        
-                                        // Găsește toate imaginile din galerie
-                                        const gallerySelectors = [
-                                            'img[src*="googleusercontent"][srcset]',
-                                            'div[data-photo-index] img',
-                                            'img[width="1000"]',
-                                            'img[style*="translateZ"]',
-                                            'div.gallery-image-high-res img'
-                                        ];
-                                        
-                                        let imgElements = [];
-                                        for (const selector of gallerySelectors) {
-                                            const elements = document.querySelectorAll(selector);
-                                            if (elements && elements.length > 0) {
-                                                imgElements = [...imgElements, ...Array.from(elements)];
-                                            }
-                                        }
-                                        
-                                        // Deduplică și adaugă la rezultate
-                                        imgElements.forEach(img => {
-                                            if (img.src && img.src.includes('googleusercontent')) {
-                                                const highResUrl = img.src.replace(/=w\d+-h\d+/, '=w1200-h1200');
-                                                if (!imgUrls.includes(highResUrl)) {
-                                                    imgUrls.push(highResUrl);
-                                                }
-                                            }
-                                        });
-                                        
-                                        return imgUrls;
                                     });
-                                    
-                                    log.info(`Extracted ${extractedImageUrls.length} images from gallery`);
-                                    
-                                    // Închide galeria
-                                    try {
-                                        await page.keyboard.press('Escape');
-                                        await page.waitForTimeout(1000);
-                                        log.info('Gallery closed successfully');
-                                    } catch (err) {
-                                        log.warning(`Error closing gallery: ${err.message}`);
-                                    }
-                                }
-                            }
-                            
-                            // Limitează numărul de imagini la maxImagesToExtract
-                            if (extractedImageUrls.length > 0) {
-                                placeData.imageUrls = extractedImageUrls.slice(0, maxImagesToExtract);
-                                log.info(`Final image count: ${placeData.imageUrls.length}`);
+                                    return reviews;
+                                }, effectiveMaxReviews, reviewFeedSelector);
+                                log.info(`Extracted ${placeData.reviews.length} reviews.`);
                             } else {
-                                log.info('No images could be extracted for this place');
+                                log.warning('Could not find or click the reviews button.');
                             }
                         } catch (e) {
-                            log.warning(`Error during image extraction: ${e.message}`);
-                        }
-                    };
-
-                    // Execută funcția de extragere a imaginilor
-                    await imageExtractionCode();
-
-                    // Extragerea profilurilor sociale din pagina de locație
-                    const socialProfiles = await page.evaluate(() => {
-                        const profiles = {};
-                        
-                        // Căutăm toate butoanele care ar putea conține linkuri sociale
-                        const buttons = document.querySelectorAll('a[data-item-id], button[data-item-id]');
-                        
-                        buttons.forEach(button => {
-                            const text = button.textContent.toLowerCase();
-                            const href = button.href || '';
-                            
-                            // Detectare platforme sociale comune
-                            if (text.includes('facebook') || href.includes('facebook.com')) {
-                                profiles.facebook = href || 'detected but no URL';
-                            }
-                            if (text.includes('instagram') || href.includes('instagram.com')) {
-                                profiles.instagram = href || 'detected but no URL';
-                            }
-                            if (text.includes('twitter') || href.includes('twitter.com') || href.includes('x.com')) {
-                                profiles.twitter = href || 'detected but no URL';
-                            }
-                            if (text.includes('linkedin') || href.includes('linkedin.com')) {
-                                profiles.linkedin = href || 'detected but no URL';
-                            }
-                            if (text.includes('youtube') || href.includes('youtube.com')) {
-                                profiles.youtube = href || 'detected but no URL';
-                            }
-                        });
-                        
-                        return profiles;
-                    });
-                    
-                    placeData.socialProfiles = { ...placeData.socialProfiles, ...socialProfiles };
-                    
-                    // Extract Contact Details from Website
-                    if (input.scrapeContacts && placeData.website) {
-                        log.info(`Attempting to extract contact details from website: ${placeData.website}`);
-                        try {
-                            // Use the helper function
-                            const contactDetails = await extractContactDetails(placeData.website, proxyConfiguration);
-                            if (contactDetails.email) {
-                                placeData.email = contactDetails.email;
-                            }
-                            placeData.socialProfiles = { ...placeData.socialProfiles, ...contactDetails.socialProfiles };
-                            log.info(`Extracted from website: Email - ${placeData.email}, Social - ${Object.keys(placeData.socialProfiles).length}`);
-                        } catch (err) {
-                            log.warning(`Failed to extract contact details from ${placeData.website}: ${err.message}`);
+                            log.warning(`Failed to extract reviews: ${e.message}`);
+                             placeData._error = (placeData._error ? placeData._error + '; ' : '') + `Review extraction failed: ${e.message}`;
                         }
                     }
-                    
-                    // Extragere recenzii
-                    if (input.maxReviews > 0) {
-                        try {
-                            // Găsim și apăsăm butonul de recenzii
-                            const reviewButtonSelectors = [
-                                'button[jsaction*="pane.rating.moreReviews"]',
-                                'button[jsaction*="reviewChart"]',
-                                'button[jsaction*="reviews"]',
-                                'button[aria-label*="reviews"]',
-                                'button[aria-label*="review"]',
-                                'a[href*="#reviews"]',
-                                'div[role="button"][jsaction*="review"]',
-                                'div.F7nice',
-                                'span[aria-label*="star"]'
-                            ];
-                            
-                            // Debug - verificăm care selectori există în pagină
-                            for (const selector of reviewButtonSelectors) {
-                                const hasButton = await page.$(selector);
-                                if (hasButton) {
-                                    log.info(`Found reviews button with selector: ${selector}`);
-                                }
-                            }
-                            
-                            // Încercăm să deschidem secțiunea de recenzii
-                            let reviewsOpened = false;
-                            
-                            for (const selector of reviewButtonSelectors) {
-                                const hasButton = await page.$(selector);
-                                if (hasButton) {
-                                    try {
-                                        log.info(`Clicking reviews button with selector: ${selector}`);
-                                        await page.click(selector);
-                                        
-                                        // Așteaptă ca panoul de recenzii să apară
-                                        const reviewPanelSelectors = [
-                                            '.gw-review', 
-                                            '[data-review-id]',
-                                            'div[data-rating]',
-                                            'div[jsaction*="reviewSort"]',
-                                            'div[role="feed"] div[jsl]'
-                                        ].join(', ');
-                                        
-                                        await page.waitForSelector(reviewPanelSelectors, { timeout: 8000 });
-                                        reviewsOpened = true;
-                                        log.info(`Review panel opened successfully using ${selector}`);
-                                        
-                                        // Așteaptă pentru încărcare completă
-                                        await page.waitForTimeout(2000);
-                                        break;
-                                    } catch (err) {
-                                        log.info(`Failed to open reviews with selector ${selector}: ${err.message}`);
-                                    }
-                                }
-                            }
-                            
-                            if (!reviewsOpened) {
-                                log.info('Could not open the reviews panel. Trying alternate method...');
-                                
-                                // Metodă alternativă: căutăm direct recenziile în pagină
-                                const hasReviewsInPage = await page.evaluate(() => {
-                                    const reviewElements = document.querySelectorAll('.jftiEf, .DU9Pgb, [data-review-id]');
-                                    return reviewElements.length > 0;
-                                });
-                                
-                                if (hasReviewsInPage) {
-                                    log.info('Found reviews directly in the page without opening panel');
-                                    reviewsOpened = true;
-                                }
-                            }
-                            
-                            // Dacă am deschis panoul de recenzii, extragem datele
-                            if (reviewsOpened) {
-                                // Scrolling pentru a încărca mai multe recenzii
-                                await page.evaluate(async (maxReviews) => {
-                                    try {
-                                        const reviewsContainer = document.querySelector('div[role="feed"], div[jsaction*="scroll"], div.m6QErb[data-creative-load-listener]');
-                                        if (reviewsContainer) {
-                                            const waitTime = 800;
-                                            let lastHeight = reviewsContainer.scrollHeight;
-                                            let attempts = 0;
-                                            
-                                            while (attempts < 3) {
-                                                // Scroll la sfârșit
-                                                reviewsContainer.scrollTo(0, reviewsContainer.scrollHeight);
-                                                await new Promise(resolve => setTimeout(resolve, waitTime));
-                                                attempts++;
-                                            }
-                                        }
-                                    } catch (e) {
-                                        console.error('Error scrolling reviews:', e);
-                                    }
-                                }, maxReviewsToExtract);
-                                
-                                // Așteaptă un moment pentru ca toate recenziile să fie încărcate complet
-                                await page.waitForTimeout(1500);
-                                
-                                // Extrage detaliile recenziilor - CORECTAT pentru a evita duplicarea
-                                const reviews = await page.evaluate((maxReviews) => {
-                                    try {
-                                        // Map pentru a ține evidența recenziilor unice după textul și autorul lor
-                                        const uniqueReviewMap = new Map();
-                                        
-                                        // Selectori pentru containerele de recenzii
-                                        const reviewSelectors = [
-                                            '.jftiEf',
-                                            '.DU9Pgb',
-                                            '[data-review-id]',
-                                            'div[data-rating]',
-                                            '.gws-localreviews__google-review',
-                                            'div.MyEned'
-                                        ];
-                                        
-                                        // Colectăm toate elementele de recenzie potrivite
-                                        let reviewElements = [];
-                                        for (const selector of reviewSelectors) {
-                                            const elements = document.querySelectorAll(selector);
-                                            if (elements && elements.length > 0) {
-                                                reviewElements = [...reviewElements, ...Array.from(elements)];
-                                            }
-                                        }
-                                        
-                                        console.log(`Found ${reviewElements.length} potential review elements`);
-                                        
-                                        for (const reviewEl of reviewElements) {
-                                            try {
-                                                // Extrage numele autorului
-                                                let authorName = null;
-                                                const authorSelectors = [
-                                                    '.d4r55',
-                                                    '[role="link"]',
-                                                    'div.WNx3ff',
-                                                    'span.wiI7pd',
-                                                    '.k8MTF',
-                                                    '.tHacU'
-                                                ];
-                                                
-                                                for (const selector of authorSelectors) {
-                                                    const authorEl = reviewEl.querySelector(selector);
-                                                    if (authorEl && authorEl.textContent.trim()) {
-                                                        authorName = authorEl.textContent.trim();
-                                                        break;
-                                                    }
-                                                }
-                                                
-                                                // Extrage rating
-                                                let rating = null;
-                                                const ratingSelectors = [
-                                                    '[aria-label*="stars"]',
-                                                    '[aria-label*="star"]',
-                                                    'span[role="img"]'
-                                                ];
-                                                
-                                                for (const selector of ratingSelectors) {
-                                                    const ratingEl = reviewEl.querySelector(selector);
-                                                    if (ratingEl) {
-                                                        const ariaLabel = ratingEl.getAttribute('aria-label') || '';
-                                                        const ratingMatch = ariaLabel.match(/(\d+(\.\d+)?)/);
-                                                        if (ratingMatch) {
-                                                            rating = parseFloat(ratingMatch[1]);
-                                                            break;
-                                                        }
-                                                    }
-                                                }
-                                                
-                                                if (!rating) {
-                                                    const dataRating = reviewEl.getAttribute('data-rating');
-                                                    if (dataRating) {
-                                                        rating = parseFloat(dataRating);
-                                                    }
-                                                }
-                                                
-                                                // Extrage data
-                                                let date = null;
-                                                const dateSelectors = [
-                                                    '.rsqaWe',
-                                                    'time',
-                                                    'span.dehysf',
-                                                    '.iUtr1',
-                                                    'span.sdwAEb'
-                                                ];
-                                                
-                                                for (const selector of dateSelectors) {
-                                                    const dateEl = reviewEl.querySelector(selector);
-                                                    if (dateEl && dateEl.textContent.trim()) {
-                                                        date = dateEl.textContent.trim();
-                                                        break;
-                                                    }
-                                                }
-                                                
-                                                // Extrage textul
-                                                let text = null;
-                                                const textSelectors = [
-                                                    '.wiI7pd',
-                                                    '[data-review-text]',
-                                                    '.review-full-text',
-                                                    '.Jtu6Td',
-                                                    '.review-snippet'
-                                                ];
-                                                
-                                                for (const selector of textSelectors) {
-                                                    const textEl = reviewEl.querySelector(selector);
-                                                    if (textEl && textEl.textContent.trim()) {
-                                                        text = textEl.textContent.trim();
-                                                        break;
-                                                    }
-                                                }
-                                                
-                                                // Verifică dacă avem date valide înainte de a adăuga recenzia
-                                                if (authorName && authorName !== 'Anonymous' && 
-                                                    rating && rating > 0 && 
-                                                    date && date !== 'Unknown date' && 
-                                                    text && text !== 'No text') {
-                                                    
-                                                    // Creează un identificator unic pentru această recenzie
-                                                    const reviewKey = `${authorName}-${text.substring(0, 20)}`;
-                                                    
-                                                    // Adaugă recenzia numai dacă nu există deja
-                                                    if (!uniqueReviewMap.has(reviewKey)) {
-                                                        uniqueReviewMap.set(reviewKey, {
-                                                            authorName,
-                                                            rating,
-                                                            date,
-                                                            text
-                                                        });
-                                                    }
-                                                }
-                                            } catch (reviewErr) {
-                                                console.error('Error parsing review:', reviewErr);
-                                            }
-                                        }
-                                        
-                                        // Convertește Map-ul înapoi la array și limitează la maxReviews
-                                        return Array.from(uniqueReviewMap.values()).slice(0, maxReviews);
-                                        
-                                    } catch (e) {
-                                        console.error('Error extracting reviews:', e);
-                                        return [];
-                                    }
-                                }, maxReviewsToExtract);
-                                
-                                if (reviews.length > 0) {
-                                    placeData.reviews = reviews;
-                                    log.info(`Successfully extracted ${reviews.length} unique reviews`);
-                                    
-                                    // Afișează prima recenzie pentru debugging
-                                    log.info(`First review sample: Author: ${reviews[0].authorName}, Rating: ${reviews[0].rating}, Date: ${reviews[0].date}`);
-                                } else {
-                                    log.info('No reviews were found or extracted for this place');
-                                }
-                                
-                                // Închide panoul de recenzii
-                                try {
-                                    await page.keyboard.press('Escape');
-                                    await page.waitForTimeout(1000);
-                                    log.info('Review panel closed successfully');
-                                } catch (e) {
-                                    log.warning(`Error closing review panel: ${e.message}`);
-                                }
-                            } else {
-                                log.info('Could not open reviews section for this place');
-                            }
-                        } catch (e) {
-                            log.warning(`Error extracting reviews: ${e.message}`);
-                        }
-                    }
-                    
-                    // Salvează rezultatul
-                    await Apify.pushData(placeData);
-                    log.info(`✅ Successfully scraped ${placeData.name}. Total scraped: ${++scrapedItemsCount}`);
-                } catch (error) {
-                    log.error(`Error processing place detail: ${error.message}`);
-                    throw error;  // Retransmite eroarea pentru a fi gestionată de handleFailedRequestFunction
                 }
-            }
-        },
 
-        // 10. Funcție de tratare a eșecurilor
-        handleFailedRequestFunction: async ({ request, error }) => {
+                // --- Extract Contacts from Website (if enabled) ---
+                if (effectiveScrapeContacts && placeData.website) {
+                    if (!costEstimator.addContact()) { // Increment contact cost and check budget
+                        log.warning(`Budget limit reached before extracting contacts for ${placeData.name}. Skipping.`);
+                    } else {
+                        log.info(`Attempting contact extraction from: ${placeData.website}`);
+                        const contactOptions = {
+                            timeout: costOptimizedMode ? 15000 : 30000,
+                            maxDepth: costOptimizedMode ? 1 : 1, // Keep depth low to save cost
+                            abortResourceTypes: costOptimizedMode ? ABORT_RESOURCE_TYPES_DEFAULT : ['image', 'font'], // Less aggressive blocking if not cost-optimized
+                        };
+                        try {
+                            // Pass the BROWSER instance here
+                            const contactInfo = await extractContactDetails(placeData.website, browser, contactOptions);
+                            placeData.email = contactInfo.email;
+                            // Merge social profiles, preferring existing ones from Maps page if any
+                            placeData.socialProfiles = { ...contactInfo.socialProfiles, ...placeData.socialProfiles };
+                            if (contactInfo._error) {
+                                 placeData._error = (placeData._error ? placeData._error + '; ' : '') + `Contact extraction note: ${contactInfo._error}`;
+                            }
+                            log.info(`Contact extraction result: Email=${!!placeData.email}, Social=${Object.keys(placeData.socialProfiles).length}`);
+                        } catch (e) {
+                            log.warning(`Contact extraction failed for ${placeData.website}: ${e.message}`);
+                             placeData._error = (placeData._error ? placeData._error + '; ' : '') + `Contact extraction failed: ${e.message}`;
+                        }
+                    }
+                }
+
+                // --- Push Data ---
+                await Apify.pushData(placeData);
+                scrapedItemsCount++;
+                log.info(`✅ Successfully scraped ${placeData.name}. Total scraped: ${scrapedItemsCount}`);
+
+                // Persist state periodically
+                if (scrapedItemsCount % 20 === 0) {
+                    await Apify.setValue('STATE', { scrapedItemsCount });
+                }
+
+            } // End DETAIL label
+        }, // End handlePageFunction
+
+        handleFailedRequestFunction: async ({ request, error, session }) => { // Add session
             log.error(`❌ Request failed after ${request.retryCount} retries: ${request.url} | Error: ${error.message}`);
-            // Log failed request details for debugging
-            const failedData = {
-                url: request.url,
-                label: request.userData.label,
-                placeName: request.userData.placeName || null,
-                retryCount: request.retryCount,
-                errorMessage: error.message,
-                errorType: error.constructor.name,
-                timestamp: new Date().toISOString()
-            };
-             // Retire session on certain errors (e.g., blocking, CAPTCHA)
-             if (error.message.includes('Navigation timeout') || error.message.includes('net::ERR_') || error.message.includes('CAPTCHA')) {
-                 log.warning(`Retiring session due to error: ${error.message}`);
-                 session.retire();
-             }
-
-            // Save failed request info to a separate dataset (optional)
-            await Apify.pushData(failedData, { datasetId: 'FAILED_REQUESTS' });
+            // Retire session on common blocking errors
+            if (error.message.includes('Navigation timeout') || error.message.includes('net::ERR_') || error.message.includes('CAPTCHA') || error.message.includes('Target closed') || error.status === 403 || error.status === 429) {
+                log.warning(`Retiring session due to error: ${error.message}`);
+                if (session) session.retire(); // Retire the session if available
+            }
+            // Save failed request info (optional)
+            // await Apify.pushData({ url: request.url, error: error.message, retryCount: request.retryCount }, { datasetId: 'FAILED_REQUESTS' });
         }
-    });
+    }); // End PuppeteerCrawler
 
-    // 11. Pornirea crawler-ului
+    // --- Start Crawler & Finish ---
     log.info('Starting the crawler run...');
     await crawler.run();
-    log.info(`Crawler finished. Total items scraped: ${scrapedItemsCount}`);
-});
+    log.info('Crawler finished.');
+
+    // Log final cost report
+    await costEstimator.logReport();
+
+    // Final state save
+    await Apify.setValue('STATE', { scrapedItemsCount });
+    log.info(`Run finished. Total items scraped: ${scrapedItemsCount}. Estimated cost: $${costEstimator.currentCost.toFixed(3)}`);
+
+}); // End Apify.main
+
+// Global timeout remains the same
+setTimeout(() => {
+    log.warning('Global timeout (10 minutes) reached, terminating the run.');
+    process.exit(1); // Use non-zero exit code for timeout
+}, 10 * 60 * 1000);

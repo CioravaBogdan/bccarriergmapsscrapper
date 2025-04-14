@@ -1,6 +1,6 @@
 {
   "title": "Google Maps Advanced Scraper Input",
-  "description": "Extract data from Google Maps for businesses, places and locations",
+  "description": "Extract data from Google Maps for businesses, places and locations via API or UI.",
   "type": "object",
   "schemaVersion": 1,
   "properties": {
@@ -49,10 +49,24 @@
       "editor": "number",
       "default": 200
     },
-    "scrapeContacts": {
-      "title": "Extract contact information",
+    "scrapePlaceDetailPage": {
+      "title": "Scrape Place Detail Page",
       "type": "boolean",
-      "description": "Get phone, website, email from places",
+      "description": "If true, navigates to the place's detail page for more data (like reviews, images). If false, extracts only data visible on the search results page.",
+      "editor": "checkbox",
+      "default": true
+    },
+    "skipClosedPlaces": {
+      "title": "Skip Permanently Closed Places",
+      "type": "boolean",
+      "description": "If true, places marked as 'Permanently closed' will not be scraped.",
+      "editor": "checkbox",
+      "default": false
+    },
+    "scrapeContacts": {
+      "title": "Extract contact information from Website",
+      "type": "boolean",
+      "description": "Attempt to visit the place's website (if available) to find email and social media links. Increases cost and run time.",
       "editor": "checkbox",
       "default": true
     },
@@ -88,6 +102,28 @@
         "useApifyProxy": true,
         "apifyProxyGroups": ["RESIDENTIAL"]
       }
+    },
+    "costOptimizedMode": {
+      "title": "Cost-optimized mode",
+      "type": "boolean",
+      "description": "Enable to reduce costs: limits images/reviews to 1, disables contact extraction, uses shorter timeouts.",
+      "editor": "checkbox",
+      "default": false
+    },
+    "maxCostPerRun": {
+      "title": "Maximum cost per run (USD)",
+      "type": "number",
+      "description": "Set maximum estimated budget in USD for this run (0 = unlimited). Stops scraping if exceeded.",
+      "editor": "number",
+      "default": 0,
+      "minimum": 0
+    },
+    "skipContactExtraction": {
+      "title": "Skip website contact extraction",
+      "type": "boolean",
+      "description": "Explicitly disable visiting websites for contact info, regardless of costOptimizedMode.",
+      "editor": "checkbox",
+      "default": false
     }
   },
   "required": []

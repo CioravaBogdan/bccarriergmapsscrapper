@@ -10,9 +10,8 @@
   "author": "Your Name",
   "license": "ISC",
   "dependencies": {
-    "apify": "^2.3.0",
-    "exponential-backoff": "^3.1.0",
-    "puppeteer": "13.7.0"
+    "apify": "^3.0.0" // Update to ^3.0.0 or latest v3
+    // Removed puppeteer and exponential-backoff
   },
   "type": "commonjs"
 }
