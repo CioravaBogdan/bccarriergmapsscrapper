@@ -1,8 +1,7 @@
 // Change to the correct Apify SDK v3 import pattern
 const { Actor, log } = require('apify');
-
-// For sleep functionality, use:
 const { sleep } = require('apify');
+const { PuppeteerCrawler } = require('crawlee');
 
 const { extractContactDetails, ABORT_RESOURCE_TYPES_DEFAULT } = require('./utils/extract-contact');
 const CostEstimator = require('./utils/cost-estimator'); // Import the class
@@ -173,7 +172,7 @@ Actor.main(async () => {
 
     // --- Puppeteer Crawler Initialization ---
     log.info('Initializing PuppeteerCrawler...');
-    const crawler = new Actor.PuppeteerCrawler({
+    const crawler = new PuppeteerCrawler({
         requestQueue,
         proxyConfiguration,
         maxConcurrency: 5, // Increase concurrency for better speed with residential proxies
