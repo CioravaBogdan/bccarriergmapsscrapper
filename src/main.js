@@ -175,31 +175,26 @@ Actor.main(async () => {
     const crawler = new PuppeteerCrawler({
         requestQueue,
         proxyConfiguration,
-        maxConcurrency: 5, // Increase concurrency for better speed with residential proxies
-        maxRequestRetries: 5, // Increase retries
-        navigationTimeoutSecs: effectiveNavigationTimeout,
-        requestHandlerTimeoutSecs: 240, // Updated property name
-
-        useSessionPool: true, // Enable session pool for better anti-blocking
-        persistCookiesPerSession: true, // Persist cookies
-
-        launchContext: { // Use launchContext for finer control
-            useChrome: true, // Use Chrome instead of Chromium if available in the image
+        // Replace handlePageTimeoutSecs with the new option name
+        requestHandlerTimeoutSecs: 240, // Updated from handlePageTimeoutSecs for crawlee v3
+        navigationTimeoutSecs: 120,     // Navigation timeout in seconds
+        maxRequestRetries: 3,           // Max retries for failed requests
+        
+        // Rest of your configuration...
+        launchContext: {
+            // Keep existing launch options...
             launchOptions: {
-                headless: true, // Or false for debugging
-                args: ['--no-sandbox', '--disable-setuid-sandbox'],
-            },
-            // Use Apify's fingerprinting
-            useFingerprints: true, // IMPORTANT: Enable fingerprinting
-            // fingerprintOptions: { // Optional: Fine-tune fingerprints if needed
-            //     fingerprintGeneratorOptions: {
-            //         devices: ['desktop'],
-            //         operatingSystems: ['windows', 'linux'],
-            //     }
-            // }
+                headless: true,
+                args: [
+                    '--disable-web-security',
+                    '--disable-features=IsolateOrigins',
+                    '--disable-site-isolation-trials',
+                    '--disable-features=BlockInsecurePrivateNetworkRequests'
+                ]
+            }
         },
-
-        // --- Page Handlers ---
+        
+        // Rest of the crawler options...
         handlePageFunction: async ({ page, request, session, browser }) => { // Add session and browser
             const { label, ...userData } = request.userData;
             log.info(`Processing ${request.url} (Label: ${label})`);
@@ -343,6 +338,11 @@ Actor.main(async () => {
                 const extractedData = await page.evaluate(() => {
                     const getText = (selector) => document.querySelector(selector)?.textContent.trim() || null;
                     const getAttribute = (selector, attr) => document.querySelector(selector)?.getAttribute(attr) || null;
+
+                    const placeName = getText('h1') || getText('.DUwDvf'); // Common selectors for name
+                    const mainCategory = getText('button[jsaction*="category"]'); // Main category button
+                    const address = getText('button[data-item-id="address"]')?.replace(/^.*?\s/, '') || getText('[data-tooltip*="address"]')?.replace(/^.*?\s/, ''); // Clean address icon text
+                    const phone = getText('button[data-item-id="phone"]')?.replace(/^.*?\s
 
                     const placeName = getText('h1') || getText('.DUwDvf'); // Common selectors for name
                     const mainCategory = getText('button[jsaction*="category"]'); // Main category button
