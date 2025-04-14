@@ -81,7 +81,7 @@ Actor.main(async () => {
     const effectiveMaxReviews = costOptimizedMode ? Math.min(maxReviews, 1) : maxReviews;
     const effectiveScrapeContacts = costOptimizedMode || skipContactExtraction ? false : scrapeContacts;
     const effectiveNavigationTimeout = costOptimizedMode ? 45 : 90; // Shorter timeouts
-    const effectiveHandlePageTimeout = costOptimizedMode ? 120 : 240;
+    const effectiveRequestHandlerTimeout = costOptimizedMode ? 120 : 240;
 
     // --- Initialize Utilities ---
     const costEstimator = new CostEstimator(maxCostPerRun);
@@ -176,7 +176,7 @@ Actor.main(async () => {
         requestQueue,
         proxyConfiguration,
         // Replace handlePageTimeoutSecs with the new option name
-        requestHandlerTimeoutSecs: 240, // Updated from handlePageTimeoutSecs for crawlee v3
+        requestHandlerTimeoutSecs: effectiveRequestHandlerTimeout, // Use the renamed variable
         navigationTimeoutSecs: 120,     // Navigation timeout in seconds
         maxRequestRetries: 3,           // Max retries for failed requests
         
@@ -338,11 +338,6 @@ Actor.main(async () => {
                 const extractedData = await page.evaluate(() => {
                     const getText = (selector) => document.querySelector(selector)?.textContent.trim() || null;
                     const getAttribute = (selector, attr) => document.querySelector(selector)?.getAttribute(attr) || null;
-
-                    const placeName = getText('h1') || getText('.DUwDvf'); // Common selectors for name
-                    const mainCategory = getText('button[jsaction*="category"]'); // Main category button
-                    const address = getText('button[data-item-id="address"]')?.replace(/^.*?\s/, '') || getText('[data-tooltip*="address"]')?.replace(/^.*?\s/, ''); // Clean address icon text
-                    const phone = getText('button[data-item-id="phone"]')?.replace(/^.*?\s
 
                     const placeName = getText('h1') || getText('.DUwDvf'); // Common selectors for name
                     const mainCategory = getText('button[jsaction*="category"]'); // Main category button
