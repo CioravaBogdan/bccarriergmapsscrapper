@@ -1,16 +1,14 @@
 FROM apify/actor-node-puppeteer-chrome:latest
 
-# Set the working directory
+# Set working directory
 WORKDIR /usr/src/app
 
-# Copy package.json and package-lock.json
+# Copy package.json files and install dependencies
 COPY package*.json ./
-
-# Install dependencies (no dev dependencies)
 RUN npm install --omit=dev
 
 # Copy the rest of the code
 COPY . ./
 
-# Command to run the scraper
+# Command to run when the container starts
 CMD ["npm", "start"]
