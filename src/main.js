@@ -178,7 +178,7 @@ Actor.main(async () => {
         maxConcurrency: 5, // Increase concurrency for better speed with residential proxies
         maxRequestRetries: 5, // Increase retries
         navigationTimeoutSecs: effectiveNavigationTimeout,
-        handlePageTimeoutSecs: effectiveHandlePageTimeout,
+        requestHandlerTimeoutSecs: 240, // Updated property name
 
         useSessionPool: true, // Enable session pool for better anti-blocking
         persistCookiesPerSession: true, // Persist cookies
