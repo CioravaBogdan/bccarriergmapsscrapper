@@ -175,28 +175,30 @@ Actor.main(async () => {
     const crawler = new PuppeteerCrawler({
         requestQueue,
         proxyConfiguration,
-        // Replace handlePageTimeoutSecs with the new option name
-        requestHandlerTimeoutSecs: effectiveRequestHandlerTimeout, // Use the renamed variable
-        navigationTimeoutSecs: 120,     // Navigation timeout in seconds
-        maxRequestRetries: 3,           // Max retries for failed requests
+        requestHandlerTimeoutSecs: effectiveRequestHandlerTimeout,
+        navigationTimeoutSecs: 120,
+        maxRequestRetries: 3,
         
-        // Rest of your configuration...
+        // Add this to tell Puppeteer where to find Chrome in the Docker image
         launchContext: {
-            // Keep existing launch options...
             launchOptions: {
                 headless: true,
+                executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome',
                 args: [
                     '--disable-web-security',
                     '--disable-features=IsolateOrigins',
                     '--disable-site-isolation-trials',
-                    '--disable-features=BlockInsecurePrivateNetworkRequests'
+                    '--disable-features=BlockInsecurePrivateNetworkRequests',
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox'
                 ]
             }
         },
         
-        // Rest of the crawler options...
-        handlePageFunction: async ({ page, request, session, browser }) => { // Add session and browser
-            const { label, ...userData } = request.userData;
+        // Rename these functions (the warning says they're deprecated):
+        requestHandler: async ({ page, request, session, browser }) => {
+            const { userData, url } = request;
+            const { label = 'SEARCH' } = userData;
             log.info(`Processing ${request.url} (Label: ${label})`);
 
             // --- Pre-processing: Consent/Captcha ---
