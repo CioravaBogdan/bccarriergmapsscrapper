@@ -91,7 +91,7 @@ Actor.main(async () => {
 
     // --- Proxy Configuration ---
     log.info('Configuring proxy...');
-    const proxyConfiguration = await Apify.createProxyConfiguration({
+    const proxyConfiguration = await Actor.createProxyConfiguration({
         ...proxyConfig,
         // Groups: ['RESIDENTIAL'], // Ensure residential if needed
     });
@@ -99,7 +99,7 @@ Actor.main(async () => {
 
     // --- Request Queue Initialization ---
     log.info('Initializing request queue...');
-    const requestQueue = await Apify.openRequestQueue();
+    const requestQueue = await Actor.openRequestQueue();
     let initialRequestCount = 0;
 
     // Add Start URLs first
@@ -173,7 +173,7 @@ Actor.main(async () => {
 
     // --- Puppeteer Crawler Initialization ---
     log.info('Initializing PuppeteerCrawler...');
-    const crawler = new Apify.PuppeteerCrawler({
+    const crawler = new Actor.PuppeteerCrawler({
         requestQueue,
         proxyConfiguration,
         maxConcurrency: 5, // Increase concurrency for better speed with residential proxies
