@@ -1,5 +1,6 @@
-const Apify = require('apify');
-const { log, sleep } = Apify.utils; // Use sleep from utils
+const { Actor } = require('apify');
+const log = Actor.utils.log;
+const sleep = Actor.utils.sleep;
 const { extractContactDetails } = require('./utils/extract-contact');
 const CostEstimator = require('./utils/cost-estimator'); // Import the class
 
@@ -44,9 +45,9 @@ async function infiniteScroll(page, scrollSelector, maxScrolls = 20) {
 }
 
 // --- Main Actor Logic ---
-Apify.main(async () => {
+Actor.main(async () => {
     log.info('Reading input...');
-    const input = await Apify.getInput();
+    const input = await Actor.getInput();
 
     // --- Input Processing & Validation ---
     const {
@@ -82,7 +83,7 @@ Apify.main(async () => {
 
     // --- Initialize Utilities ---
     const costEstimator = new CostEstimator(maxCostPerRun);
-    const state = await Apify.getValue('STATE') || { scrapedItemsCount: 0 };
+    const state = await Actor.getValue('STATE') || { scrapedItemsCount: 0 };
     let scrapedItemsCount = state.scrapedItemsCount;
 
     // --- Proxy Configuration ---
@@ -252,7 +253,7 @@ Apify.main(async () => {
                             log.info(`'No results found' for search: "${userData.search}"`);
                             return; // No results, nothing more to do
                         }
-                        await Apify.setValue(`ERROR_SEARCH_PAGE_${Date.now()}`, pageContent, { contentType: 'text/html' });
+                        await Actor.setValue(`ERROR_SEARCH_PAGE_${Date.now()}`, pageContent, { contentType: 'text/html' });
                         throw new Error(`Could not find search results container ('${resultsSelector}') or fallback links.`);
                     }
                 }
@@ -540,13 +541,13 @@ Apify.main(async () => {
                 }
 
                 // --- Push Data ---
-                await Apify.pushData(placeData);
+                await Actor.pushData(placeData);
                 scrapedItemsCount++;
                 log.info(`✅ Successfully scraped ${placeData.name}. Total scraped: ${scrapedItemsCount}`);
 
                 // Persist state periodically
                 if (scrapedItemsCount % 20 === 0) {
-                    await Apify.setValue('STATE', { scrapedItemsCount });
+                    await Actor.setValue('STATE', { scrapedItemsCount });
                 }
 
             } // End DETAIL label
@@ -573,7 +574,7 @@ Apify.main(async () => {
     await costEstimator.logReport();
 
     // Final state save
-    await Apify.setValue('STATE', { scrapedItemsCount });
+    await Actor.setValue('STATE', { scrapedItemsCount });
     log.info(`Run finished. Total items scraped: ${scrapedItemsCount}. Estimated cost: $${costEstimator.currentCost.toFixed(3)}`);
 
 }); // End Apify.main
