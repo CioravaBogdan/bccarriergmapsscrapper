@@ -1,6 +1,9 @@
-const { Actor } = require('apify');
-const log = Actor.utils.log;
-const sleep = Actor.utils.sleep;
+// Change to the correct Apify SDK v3 import pattern
+const { Actor, log } = require('apify');
+
+// For sleep functionality, use:
+const { sleep } = require('apify');
+
 const { extractContactDetails } = require('./utils/extract-contact');
 const CostEstimator = require('./utils/cost-estimator'); // Import the class
 
