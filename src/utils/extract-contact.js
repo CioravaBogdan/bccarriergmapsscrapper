@@ -347,3 +347,6 @@ exports.extractContactDetails = async (websiteUrl, browser, options = {}) => {
     log.info(`[Contact Extractor] Finished for ${websiteUrl} in ${result._extractionTimeMs}ms. Pages: ${result._pagesScanned.length}. Found: Emails=${result.emails.length}, Phones=${result.phones.length}, Social=${Object.keys(result.socialProfiles).length}, Persons=${result.contactPersons.length}, Error=${result._error || 'None'}`, { url: websiteUrl });
     return result;
 };
+
+// At the bottom of the file, export constants that are used externally
+exports.ABORT_RESOURCE_TYPES_DEFAULT = ABORT_RESOURCE_TYPES_DEFAULT;
