@@ -112,7 +112,7 @@
     },
     "maxCostPerRun": {
       "title": "Maximum cost per run (USD)",
-      "type": "number",
+      "type": "integer",
       "description": "Set maximum estimated budget in USD for this run (0 = unlimited). Stops scraping if exceeded.",
       "editor": "number",
       "default": 0,
