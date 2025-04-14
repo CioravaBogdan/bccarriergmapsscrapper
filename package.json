@@ -11,7 +11,8 @@
   "license": "ISC",
   "dependencies": {
     "apify": "^3.0.0",
-    "crawlee": "^3.0.0"
+    "crawlee": "^3.0.0",
+    "puppeteer": "^19.7.1"
   },
   "type": "commonjs"
 }
