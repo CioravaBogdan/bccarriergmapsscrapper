@@ -179,11 +179,13 @@ Actor.main(async () => {
         navigationTimeoutSecs: 120,
         maxRequestRetries: 3,
         
-        // Add this to tell Puppeteer where to find Chrome in the Docker image
+        // Explicitly configure Puppeteer to use the system Chrome
         launchContext: {
+            // This is the key change - use puppeteer-core
+            useChrome: true, // Use the Chrome installed on the system
             launchOptions: {
                 headless: true,
-                executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome',
+                executablePath: '/usr/bin/google-chrome',
                 args: [
                     '--disable-web-security',
                     '--disable-features=IsolateOrigins',
@@ -195,7 +197,7 @@ Actor.main(async () => {
             }
         },
         
-        // Rename these functions (the warning says they're deprecated):
+        // Also fix these function names to avoid the deprecation warnings
         requestHandler: async ({ page, request, session, browser }) => {
             const { userData, url } = request;
             const { label = 'SEARCH' } = userData;
@@ -552,7 +554,7 @@ Actor.main(async () => {
             } // End DETAIL label
         }, // End handlePageFunction
 
-        handleFailedRequestFunction: async ({ request, error, session }) => { // Add session
+        failedRequestHandler: async ({ request, error, session }) => { // Add session
             log.error(`❌ Request failed after ${request.retryCount} retries: ${request.url} | Error: ${error.message}`);
             // Retire session on common blocking errors
             if (error.message.includes('Navigation timeout') || error.message.includes('net::ERR_') || error.message.includes('CAPTCHA') || error.message.includes('Target closed') || error.status === 403 || error.status === 429) {

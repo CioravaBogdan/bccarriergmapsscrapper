@@ -3,6 +3,9 @@ FROM apify/actor-node-puppeteer-chrome:latest
 # Switch to root user for npm install
 USER root
 
+# Set environment variable to skip Chromium download
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+
 # Set working directory
 WORKDIR /usr/src/app
 
@@ -14,7 +17,6 @@ RUN npm install --omit=dev
 COPY . ./
 
 # Switch back to the non-root user for better security
-# The apify/actor-node images use 'myuser' as the default user
 USER myuser
 
 # Command to run when the container starts
